@@ -3,9 +3,10 @@ import SwiftUI
 
 struct MailImageGalleryView: View {
     let gallery: MailImageGallery
+    let onOpenEmail: (MailMessageItem) -> Void
 
     @State private var selectedIDs: Set<UUID> = []
-    @State private var statusMessage = "Click to select · double-click to open"
+    @State private var statusMessage = "Select images · drag them anywhere or copy and paste"
 
     private let columns = [
         GridItem(.adaptive(minimum: 165, maximum: 240), spacing: 14)
@@ -67,6 +68,14 @@ struct MailImageGalleryView: View {
                 }
             }
             .disabled(gallery.items.isEmpty)
+
+            Button("Copy", action: copySelected)
+                .disabled(selectedIDs.isEmpty)
+
+            Button("Open in Mail") {
+                if let item = selectedItems.first { onOpenEmail(item.message) }
+            }
+            .disabled(selectedItems.count != 1)
 
             Button(saveButtonTitle, action: saveSelected)
                 .buttonStyle(.borderedProminent)
@@ -148,9 +157,19 @@ struct MailImageGalleryView: View {
         .onTapGesture(count: 2) {
             NSWorkspace.shared.open(item.cachedURL)
         }
+        .onDrag {
+            NSItemProvider(contentsOf: item.cachedURL) ?? NSItemProvider()
+        }
         .contextMenu {
-            Button("Open") {
+            Button("Open Image") {
                 NSWorkspace.shared.open(item.cachedURL)
+            }
+            Button("Open in Mail") {
+                onOpenEmail(item.message)
+            }
+            Divider()
+            Button("Copy Image") {
+                copy([item])
             }
             Button("Save This Image…") {
                 saveSingle(item)
@@ -167,7 +186,39 @@ struct MailImageGalleryView: View {
         } else {
             selectedIDs.insert(item.id)
         }
-        statusMessage = "Select one or more images to save"
+        statusMessage = "Drag images, copy them, or save them"
+    }
+
+    private func copySelected() {
+        copy(selectedItems)
+    }
+
+    private func copy(_ items: [MailImageItem]) {
+        guard !items.isEmpty else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+
+        let didCopy: Bool
+        if items.count == 1, let item = items.first {
+            let pasteboardItem = NSPasteboardItem()
+            pasteboardItem.setString(item.cachedURL.absoluteString, forType: .fileURL)
+            if let image = NSImage(contentsOf: item.cachedURL),
+               let TIFFData = image.tiffRepresentation {
+                pasteboardItem.setData(TIFFData, forType: .tiff)
+            }
+            didCopy = pasteboard.writeObjects([pasteboardItem])
+        } else {
+            didCopy = pasteboard.writeObjects(items.map { $0.cachedURL as NSURL })
+        }
+
+        if didCopy {
+            statusMessage = items.count == 1
+                ? "Image copied · paste it anywhere"
+                : "\(items.count) images copied · paste them anywhere"
+        } else {
+            statusMessage = "Could not copy the selected images."
+        }
     }
 
     private func saveSelected() {

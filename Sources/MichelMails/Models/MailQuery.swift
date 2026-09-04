@@ -33,24 +33,31 @@ struct MailQuery: Codable, Equatable, Sendable {
     }
 }
 
+struct MailMessageReference: Equatable, Sendable {
+    let messageIdentifier: String
+    let localIdentifier: String
+}
+
+struct MailMessageItem: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let reference: MailMessageReference
+    let sender: String
+    let subject: String
+    let preview: String
+    let receivedAt: Date?
+}
+
+struct MailSearchResults: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let items: [MailMessageItem]
+    let query: MailQuery
+}
+
 struct MailImageItem: Identifiable, Equatable, Sendable {
-    let id: UUID
+    let id = UUID()
     let cachedURL: URL
-
-    init(cachedURL: URL) {
-        self.id = UUID()
-        self.cachedURL = cachedURL
-    }
-
-    var displayName: String {
-        let name = cachedURL.lastPathComponent
-        guard name.count > 5,
-              name.prefix(4).allSatisfy(\.isNumber),
-              name[name.index(name.startIndex, offsetBy: 4)] == "-" else {
-            return name
-        }
-        return String(name.dropFirst(5))
-    }
+    let displayName: String
+    let message: MailMessageItem
 }
 
 struct MailImageGallery: Identifiable, Equatable, Sendable {
@@ -68,6 +75,72 @@ struct PendingCopy: Identifiable, Equatable, Sendable {
     let id = UUID()
     let query: MailQuery
     let summary: MailMatchSummary
+}
+
+enum MailScriptRecordParser {
+    private static let recordSeparator: Character = "\u{1e}"
+    private static let unitSeparator: Character = "\u{1f}"
+
+    static func messages(from output: String) -> [MailMessageItem] {
+        rows(from: output).compactMap { fields in
+            guard fields.count == 6 else { return nil }
+            return message(from: fields, offset: 0)
+        }
+    }
+
+    static func images(from output: String, in directory: URL) -> [MailImageItem] {
+        rows(from: output).compactMap { fields in
+            guard fields.count == 8,
+                  let message = message(from: fields, offset: 2) else { return nil }
+            let cachedURL = directory.appendingPathComponent(fields[0])
+            guard FileManager.default.fileExists(atPath: cachedURL.path) else { return nil }
+            return MailImageItem(
+                cachedURL: cachedURL,
+                displayName: fields[1].nilIfEmpty ?? fields[0],
+                message: message
+            )
+        }
+    }
+
+    private static func rows(from output: String) -> [[String]] {
+        output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: recordSeparator)
+            .map {
+                $0.split(separator: unitSeparator, omittingEmptySubsequences: false).map(String.init)
+            }
+    }
+
+    private static func message(from fields: [String], offset: Int) -> MailMessageItem? {
+        guard fields.count >= offset + 6 else { return nil }
+        let messageIdentifier = fields[offset]
+        let localIdentifier = fields[offset + 1]
+        guard !messageIdentifier.isEmpty || !localIdentifier.isEmpty else { return nil }
+
+        return MailMessageItem(
+            reference: MailMessageReference(
+                messageIdentifier: messageIdentifier,
+                localIdentifier: localIdentifier
+            ),
+            sender: fields[offset + 2].nilIfEmpty ?? "Unknown sender",
+            subject: fields[offset + 3].nilIfEmpty ?? "(No subject)",
+            preview: fields[offset + 4],
+            receivedAt: mailDate(from: fields[offset + 5])
+        )
+    }
+
+    private static func mailDate(from value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return formatter.date(from: value)
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 enum MichelMailsError: LocalizedError {

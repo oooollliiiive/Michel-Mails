@@ -13,6 +13,7 @@ final class SearchViewModel: ObservableObject {
     @Published var historyIsVisible = false
     @Published private(set) var recentPrompts: [String] = []
     var onGalleryReady: ((MailImageGallery) -> Void)?
+    var onResultsReady: ((MailSearchResults) -> Void)?
     var onHistorySuggestionsChanged: ((Int) -> Void)?
 
     private let interpreter = AIQueryInterpreter()
@@ -74,13 +75,14 @@ final class SearchViewModel: ObservableObject {
 
                 switch parsedQuery.action {
                 case .search:
-                    let count = try await searchWithFuzzyFallback(parsedQuery)
-                    if count == 0 {
+                    let results = try await searchWithFuzzyFallback(parsedQuery)
+                    if results.items.isEmpty {
                         statusText = "No emails found."
                     } else {
-                        statusText = count == 1
-                            ? "1 email opened in Mail."
-                            : "\(count) emails found · opened in Mail."
+                        onResultsReady?(results)
+                        statusText = results.items.count == 1
+                            ? "1 email displayed."
+                            : "\(results.items.count) emails displayed."
                     }
 
                 case .showImages:
@@ -148,6 +150,18 @@ final class SearchViewModel: ObservableObject {
         statusText = "Copy cancelled."
     }
 
+    func openMessage(_ message: MailMessageItem) {
+        statusText = "Opening email in Mail…"
+        Task {
+            do {
+                try await mailService.openMessage(message)
+                statusText = "Email opened in Mail."
+            } catch {
+                statusText = userFacingMessage(for: error)
+            }
+        }
+    }
+
     func saveSettings() {
         do {
             try KeychainStore.saveAPIKey(APIKeyDraft)
@@ -170,16 +184,16 @@ final class SearchViewModel: ObservableObject {
         return "\(summary.messageCount) \(emailWord) · \(summary.imageCount) \(imageWord) → \(folder)"
     }
 
-    private func searchWithFuzzyFallback(_ query: MailQuery) async throws -> Int {
-        let exactCount = try await mailService.searchAndOpen(query)
-        guard exactCount == 0, query.needsSenderResolution else { return exactCount }
+    private func searchWithFuzzyFallback(_ query: MailQuery) async throws -> MailSearchResults {
+        let exactResults = try await mailService.searchMessages(query)
+        guard exactResults.items.isEmpty, query.needsSenderResolution else { return exactResults }
 
         statusText = "Looking for a similar contact name…"
         let resolved = try await mailService.resolvingSender(in: query)
-        guard resolved.sender != query.sender else { return 0 }
+        guard resolved.sender != query.sender else { return exactResults }
 
         statusText = "Likely contact: \(resolved.sender ?? query.sender ?? "") · searching again…"
-        return try await mailService.searchAndOpen(resolved)
+        return try await mailService.searchMessages(resolved)
     }
 
     private func imageSummaryWithFuzzyFallback(

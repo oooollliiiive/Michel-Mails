@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import MichelMails
 
@@ -73,4 +74,47 @@ func searchHistorySuggestions() {
     #expect(entries == ["10 derniers emails de Michel", "Show me recent photos"])
     #expect(SearchHistory.suggestions(for: "michel", in: entries) == ["10 derniers emails de Michel"])
     #expect(SearchHistory.suggestions(for: "PHOTOS", in: entries) == ["Show me recent photos"])
+}
+
+@Test("Mail records keep the original message reference and metadata")
+func mailRecordParsing() {
+    let unit = "\u{1f}"
+    let record = "\u{1e}"
+    let first = ["message-1", "101", "Michel Gondry", "Pictures", "Here are the files", "2026-09-04T12:34:56"]
+        .joined(separator: unit)
+    let second = ["message-2", "102", "Raffi", "Hello", "A short preview", "2026-09-03T09:00:00"]
+        .joined(separator: unit)
+
+    let items = MailScriptRecordParser.messages(from: first + record + second)
+
+    #expect(items.count == 2)
+    #expect(items[0].reference.messageIdentifier == "message-1")
+    #expect(items[0].reference.localIdentifier == "101")
+    #expect(items[0].sender == "Michel Gondry")
+    #expect(items[0].subject == "Pictures")
+    #expect(items[0].preview == "Here are the files")
+    #expect(items[0].receivedAt != nil)
+}
+
+@Test("Image records preserve the source email for Open in Mail")
+func imageRecordParsing() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fileName = "0001-Holiday-photo.jpg"
+    try Data().write(to: directory.appendingPathComponent(fileName))
+    let unit = "\u{1f}"
+    let output = [
+        fileName, "photo.jpg", "message-7", "707", "Raffi", "Holiday", "A photo from the trip",
+        "2026-09-04T08:15:00"
+    ].joined(separator: unit)
+
+    let items = MailScriptRecordParser.images(from: output, in: directory)
+
+    #expect(items.count == 1)
+    #expect(items[0].displayName == "photo.jpg")
+    #expect(items[0].message.reference.messageIdentifier == "message-7")
+    #expect(items[0].message.subject == "Holiday")
 }

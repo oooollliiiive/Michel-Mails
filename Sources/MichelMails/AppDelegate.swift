@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let historySpacing: CGFloat = 12
 
     private var panel: PromptPanel?
+    private var resultsWindow: NSWindow?
     private var galleryWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private let viewModel = SearchViewModel()
@@ -23,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         viewModel.onGalleryReady = { [weak self] gallery in
             self?.showGallery(gallery)
+        }
+        viewModel.onResultsReady = { [weak self] results in
+            self?.showResults(results)
         }
         viewModel.onHistorySuggestionsChanged = { [weak self] count in
             self?.resizePromptPanel(forHistoryCount: count)
@@ -73,7 +77,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             galleryWindow = window
         }
 
-        window.contentView = NSHostingView(rootView: MailImageGalleryView(gallery: gallery))
+        window.contentView = NSHostingView(
+            rootView: MailImageGalleryView(
+                gallery: gallery,
+                onOpenEmail: { [weak self] message in
+                    self?.viewModel.openMessage(message)
+                }
+            )
+        )
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func showResults(_ results: MailSearchResults) {
+        let window: NSWindow
+        if let resultsWindow {
+            window = resultsWindow
+        } else {
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 820, height: 600),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Email Results"
+            window.minSize = NSSize(width: 680, height: 420)
+            window.isReleasedWhenClosed = false
+            if !window.setFrameUsingName("MichelMailsResultsWindow") {
+                window.center()
+            }
+            window.setFrameAutosaveName("MichelMailsResultsWindow")
+            resultsWindow = window
+        }
+
+        window.contentView = NSHostingView(
+            rootView: MailSearchResultsView(
+                results: results,
+                onOpenEmail: { [weak self] message in
+                    self?.viewModel.openMessage(message)
+                }
+            )
+        )
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }

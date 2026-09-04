@@ -27,13 +27,17 @@ final class MailService {
         return resolved
     }
 
-    func searchAndOpen(_ query: MailQuery) async throws -> Int {
+    func searchMessages(_ query: MailQuery) async throws -> MailSearchResults {
         try await performMailSearch(query)
         let output = try await Self.runAppleScript(
             Self.filterScript,
-            arguments: scriptArguments(mode: "open", query: query, destination: "")
+            arguments: scriptArguments(mode: "list_messages", query: query, destination: "")
         )
-        return parseSummary(output).messageCount
+        NSApp.activate(ignoringOtherApps: true)
+        return MailSearchResults(
+            items: MailScriptRecordParser.messages(from: output),
+            query: query
+        )
     }
 
     func countImages(_ query: MailQuery) async throws -> MailMatchSummary {
@@ -53,7 +57,7 @@ final class MailService {
 
         let cacheDirectory = try prepareGalleryCache()
         try await performMailSearch(imageQuery)
-        _ = try await Self.runAppleScript(
+        let output = try await Self.runAppleScript(
             Self.filterScript,
             arguments: scriptArguments(
                 mode: "gallery_images",
@@ -62,16 +66,10 @@ final class MailService {
             )
         )
         NSApp.activate(ignoringOtherApps: true)
-
-        let URLs = try FileManager.default.contentsOfDirectory(
-            at: cacheDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+        return MailImageGallery(
+            items: MailScriptRecordParser.images(from: output, in: cacheDirectory),
+            query: imageQuery
         )
-        let items = URLs
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            .map(MailImageItem.init(cachedURL:))
-        return MailImageGallery(items: items, query: imageQuery)
     }
 
     func copyImages(_ query: MailQuery, to destination: URL) async throws -> MailMatchSummary {
@@ -82,6 +80,28 @@ final class MailService {
         )
         NSApp.activate(ignoringOtherApps: true)
         return parseSummary(output)
+    }
+
+    func openMessage(_ message: MailMessageItem) async throws {
+        let output = try await Self.runAppleScript(
+            Self.openMessageScript,
+            arguments: [
+                message.reference.messageIdentifier,
+                message.reference.localIdentifier
+            ]
+        )
+        if output.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
+            return
+        }
+
+        let identifier = message.reference.messageIdentifier
+        if !identifier.isEmpty,
+           let encoded = identifier.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+           let messageURL = URL(string: "message://\(encoded)"),
+           NSWorkspace.shared.open(messageURL) {
+            return
+        }
+        throw MichelMailsError.mail("The original email could not be opened.")
     }
 
     private func performMailSearch(_ query: MailQuery) async throws {
@@ -341,6 +361,41 @@ final class MailService {
     end tell
     """#
 
+    private static let openMessageScript = #"""
+    on run argv
+        set targetMessageIdentifier to item 1 of argv
+        set targetLocalIdentifier to item 2 of argv
+
+        tell application "Mail"
+            activate
+            if (count of message viewers) is 0 then return "0"
+            set targetViewer to message viewer 1
+            repeat with aMessage in visible messages of targetViewer
+                set isMatch to false
+                if targetMessageIdentifier is not "" then
+                    try
+                        set isMatch to (message id of aMessage as text) is targetMessageIdentifier
+                    end try
+                end if
+                if not isMatch and targetLocalIdentifier is not "" then
+                    try
+                        set isMatch to (id of aMessage as text) is targetLocalIdentifier
+                    end try
+                end if
+                if isMatch then
+                    try
+                        open contents of aMessage
+                    on error
+                        set selected messages of targetViewer to {contents of aMessage}
+                    end try
+                    return "1"
+                end if
+            end repeat
+        end tell
+        return "0"
+    end run
+    """#
+
     private static let filterScript = #"""
     on run argv
         set operationMode to item 1 of argv
@@ -351,6 +406,8 @@ final class MailService {
         set maximumResults to (item 6 of argv) as integer
         set destinationFolder to item 7 of argv
         set directionMode to item 8 of argv
+        set unitSeparator to ASCII character 31
+        set recordSeparator to ASCII character 30
 
         if startAge < 0 then
             set startCutoff to missing value
@@ -363,7 +420,8 @@ final class MailService {
             set endCutoff to (current date) - endAge
         end if
 
-        set matchingMessages to {}
+        set resultRows to {}
+        set imageRows to {}
         set matchedCount to 0
         set imageCount to 0
         set copiedCount to 0
@@ -373,14 +431,12 @@ final class MailService {
             set targetViewer to message viewer 1
             set originalSortColumn to missing value
             set originalSortAscending to missing value
-            if operationMode is "gallery_images" then
-                try
-                    set originalSortColumn to sort column of targetViewer
-                    set originalSortAscending to sorted ascending of targetViewer
-                    set sort column of targetViewer to date received column
-                    set sorted ascending of targetViewer to false
-                end try
-            end if
+            try
+                set originalSortColumn to sort column of targetViewer
+                set originalSortAscending to sorted ascending of targetViewer
+                set sort column of targetViewer to date received column
+                set sorted ascending of targetViewer to false
+            end try
             set candidates to visible messages of targetViewer
 
             repeat with aMessage in candidates
@@ -389,10 +445,8 @@ final class MailService {
                     set usefulImages to my usefulImageAttachments(aMessage)
                     set imageCount to imageCount + (count of usefulImages)
 
-                    if operationMode is "open" then
-                        if (count of matchingMessages) < maximumResults then
-                            set end of matchingMessages to contents of aMessage
-                        end if
+                    if operationMode is "list_messages" then
+                        set end of resultRows to my messageRow(aMessage, unitSeparator, recordSeparator)
                     else if operationMode is "copy_images" then
                         repeat with anAttachment in usefulImages
                             try
@@ -401,6 +455,9 @@ final class MailService {
                                 set safeAttachmentName to my safeFileName(name of anAttachment)
                                 set targetName to my paddedNumber(copiedCount) & "-" & safeSubject & "-" & safeAttachmentName
                                 save anAttachment in POSIX file (destinationFolder & "/" & targetName)
+                                set attachmentName to my cleanField(name of anAttachment, unitSeparator, recordSeparator)
+                                set messageData to my messageRow(aMessage, unitSeparator, recordSeparator)
+                                set end of imageRows to my cleanField(targetName, unitSeparator, recordSeparator) & unitSeparator & attachmentName & unitSeparator & messageData
                             on error
                                 set copiedCount to copiedCount - 1
                             end try
@@ -420,27 +477,99 @@ final class MailService {
                         end repeat
                     end if
                 end if
+                if operationMode is "list_messages" and (count of resultRows) ≥ maximumResults then exit repeat
                 if operationMode is "gallery_images" and copiedCount ≥ maximumResults then exit repeat
+                if (operationMode is "copy_images" or operationMode is "count_images") and matchedCount ≥ maximumResults then exit repeat
             end repeat
 
-            if operationMode is "gallery_images" and originalSortColumn is not missing value then
+            if originalSortColumn is not missing value then
                 try
                     set sort column of targetViewer to originalSortColumn
                     set sorted ascending of targetViewer to originalSortAscending
                 end try
             end if
-
-            if operationMode is "open" and (count of matchingMessages) > 0 then
-                set selected messages of targetViewer to matchingMessages
-                activate
-            end if
         end tell
 
-        if operationMode is "copy_images" or operationMode is "gallery_images" then
+        if operationMode is "list_messages" then
+            return my joinRows(resultRows, recordSeparator)
+        else if operationMode is "gallery_images" then
+            return my joinRows(imageRows, recordSeparator)
+        else if operationMode is "copy_images" then
             return matchedCount & "|" & copiedCount
         end if
         return matchedCount & "|" & imageCount
     end run
+
+    on messageRow(aMessage, unitSeparator, recordSeparator)
+        set messageIdentifier to ""
+        set localIdentifier to ""
+        set senderText to ""
+        set subjectText to ""
+        set previewText to ""
+        set receivedText to ""
+
+        tell application "Mail"
+            try
+                set messageIdentifier to message id of aMessage as text
+            end try
+            try
+                set localIdentifier to id of aMessage as text
+            end try
+            try
+                set senderText to sender of aMessage as text
+            end try
+            try
+                set subjectText to subject of aMessage as text
+            end try
+            try
+                set previewText to content of aMessage as text
+            end try
+            try
+                set receivedText to my ISODateText(date received of aMessage)
+            end try
+        end tell
+
+        set senderText to my cleanField(senderText, unitSeparator, recordSeparator)
+        set subjectText to my cleanField(subjectText, unitSeparator, recordSeparator)
+        set previewText to my cleanField(previewText, unitSeparator, recordSeparator)
+        if (count of previewText) > 240 then set previewText to text 1 thru 240 of previewText & "…"
+        return my cleanField(messageIdentifier, unitSeparator, recordSeparator) & unitSeparator & my cleanField(localIdentifier, unitSeparator, recordSeparator) & unitSeparator & senderText & unitSeparator & subjectText & unitSeparator & previewText & unitSeparator & receivedText
+    end messageRow
+
+    on ISODateText(aDate)
+        set yearText to year of aDate as integer as text
+        set monthText to my paddedPair(month of aDate as integer)
+        set dayText to my paddedPair(day of aDate as integer)
+        set hourText to my paddedPair(hours of aDate as integer)
+        set minuteText to my paddedPair(minutes of aDate as integer)
+        set secondText to my paddedPair(seconds of aDate as integer)
+        return yearText & "-" & monthText & "-" & dayText & "T" & hourText & ":" & minuteText & ":" & secondText
+    end ISODateText
+
+    on paddedPair(valueNumber)
+        if valueNumber < 10 then return "0" & (valueNumber as text)
+        return valueNumber as text
+    end paddedPair
+
+    on cleanField(sourceText, unitSeparator, recordSeparator)
+        if sourceText is missing value then return ""
+        set cleaned to sourceText as text
+        repeat with invalidCharacter in {unitSeparator, recordSeparator, return, linefeed, tab}
+            set cleaned to my replaceText(cleaned, contents of invalidCharacter, " ")
+        end repeat
+        repeat while cleaned contains "  "
+            set cleaned to my replaceText(cleaned, "  ", " ")
+        end repeat
+        return cleaned
+    end cleanField
+
+    on joinRows(rowsToJoin, recordSeparator)
+        set previousDelimiters to AppleScript's text item delimiters
+        set AppleScript's text item delimiters to recordSeparator
+        set joined to rowsToJoin as text
+        set AppleScript's text item delimiters to previousDelimiters
+        return joined
+    end joinRows
 
     on messageMatches(aMessage, startCutoff, endCutoff, needsAttachment, needsImage, directionMode)
         tell application "Mail"

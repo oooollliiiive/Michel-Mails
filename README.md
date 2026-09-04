@@ -2,7 +2,7 @@
 
 Application macOS de recherche intelligente pour Apple Mail.
 
-Michel Mails permet de formuler des recherches en langage naturel, en français ou en anglais, avec tolérance aux fautes et aux variantes de noms. Les résultats peuvent être ouverts dans Mail. L'application peut aussi effectuer des actions explicites et confirmées, comme copier les images trouvées dans un dossier.
+Michel Mails permet de formuler des recherches en langage naturel, en français ou en anglais, avec tolérance aux fautes et aux variantes de noms. Les résultats sont affichés dans Michel Mails et chaque message peut être ouvert individuellement dans Mail. L'application peut aussi effectuer des actions explicites et confirmées, comme copier les images trouvées dans un dossier.
 
 ## Principes du produit
 
@@ -24,10 +24,11 @@ Le MVP comprend :
 - un schéma de sortie strict pour convertir le prompt en filtres fiables ;
 - un mode local de secours ;
 - la correction approximative des noms grâce aux Contacts et à la similarité orthographique ;
-- la recherche dans l’index natif de Mail, puis la sélection des vrais messages dans Mail ;
+- la recherche dans l’index natif de Mail, puis une liste limitée et triée affichée directement dans Michel Mails ;
 - la détection des images jointes en excluant les petits logos et éléments de signature ;
 - une galerie native des images reçues, triées des plus récentes aux plus anciennes ;
-- la sélection d’une ou plusieurs images et leur enregistrement à l’endroit choisi ;
+- le glisser-déposer des images vers le Finder ou une autre application ;
+- le copier-coller, l’enregistrement d’une ou plusieurs images et l’ouverture de leur email d’origine ;
 - une confirmation avant de copier des images dans un dossier ;
 - le stockage local de la clé API dans un fichier privé accessible uniquement à l’utilisateur ;
 - la migration automatique de l’ancienne entrée du trousseau afin d’éviter une demande de mot de passe après chaque compilation locale.
@@ -66,7 +67,7 @@ swift test
 3. Autoriser Michel Mails dans **Réglages Système → Confidentialité et sécurité → Accessibilité**.
 4. Accepter l’autorisation d’automatiser Mail lorsqu’elle est demandée.
 
-L’autorisation d’accessibilité sert uniquement à placer la requête interprétée dans le champ de recherche natif de Mail. AppleScript est ensuite utilisé pour vérifier les dates et les pièces jointes, sélectionner les messages, et copier les images après confirmation.
+L’autorisation d’accessibilité sert uniquement à placer la requête interprétée dans le champ de recherche natif de Mail. AppleScript est ensuite utilisé pour vérifier les dates et les pièces jointes, récupérer les métadonnées nécessaires à l’affichage local, ouvrir un message choisi, et copier les images après confirmation.
 
 ## Exemples
 
