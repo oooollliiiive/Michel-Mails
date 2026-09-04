@@ -52,3 +52,13 @@ func receivedImagesGalleryPrompt() {
     #expect(query.sender == nil)
     #expect(query.keywords.isEmpty)
 }
+
+@Test("A French latest-email request keeps the sender and limit")
+func latestEmailsFromSenderPrompt() {
+    let query = LocalQueryInterpreter().interpret("10 derniers mails de Michel")
+
+    #expect(query.action == .search)
+    #expect(query.sender == "Michel")
+    #expect(query.limit == 10)
+    #expect(query.keywords.isEmpty)
+}

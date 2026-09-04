@@ -4,7 +4,7 @@ import Foundation
 @MainActor
 final class SearchViewModel: ObservableObject {
     @Published var prompt = ""
-    @Published var statusText = "Demandez-moi de retrouver un email."
+    @Published var statusText = "Ask me to find an email."
     @Published var isWorking = false
     @Published var pendingCopy: PendingCopy?
     @Published var showSettings = false
@@ -19,7 +19,7 @@ final class SearchViewModel: ObservableObject {
         APIKeyDraft = KeychainStore.readAPIKey() ?? ""
         modelDraft = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-5.4-mini"
         if APIKeyDraft.isEmpty {
-            statusText = "Mode local · ajoutez une clé OpenAI avec ⚙︎ pour activer l’IA."
+            statusText = "Local mode · add an OpenAI key in Settings to enable AI."
             showSettings = true
         }
     }
@@ -34,7 +34,7 @@ final class SearchViewModel: ObservableObject {
 
         pendingCopy = nil
         isWorking = true
-        statusText = usesOpenAI ? "Je comprends la demande…" : "J’interprète la demande en mode local…"
+        statusText = usesOpenAI ? "Understanding your request…" : "Understanding your request locally…"
 
         Task {
             defer { isWorking = false }
@@ -44,43 +44,43 @@ final class SearchViewModel: ObservableObject {
                     APIKey: APIKeyDraft.nilIfBlank,
                     model: modelDraft.nilIfBlank ?? "gpt-5.4-mini"
                 )
-                statusText = "Je cherche dans Mail…"
+                statusText = "Searching in Mail…"
 
                 switch parsedQuery.action {
                 case .search:
                     let count = try await searchWithFuzzyFallback(parsedQuery)
                     if count == 0 {
-                        statusText = "Aucun email trouvé."
+                        statusText = "No emails found."
                     } else {
                         statusText = count == 1
-                            ? "1 email ouvert dans Mail."
-                            : "\(count) emails trouvés · ouverts dans Mail."
+                            ? "1 email opened in Mail."
+                            : "\(count) emails found · opened in Mail."
                     }
 
                 case .showImages:
-                    statusText = "Je prépare les images…"
+                    statusText = "Preparing images…"
                     let gallery = try await galleryWithFuzzyFallback(parsedQuery)
                     if gallery.items.isEmpty {
-                        statusText = "Aucune image trouvée."
+                        statusText = "No images found."
                     } else {
                         onGalleryReady?(gallery)
                         statusText = gallery.items.count == 1
-                            ? "1 image affichée."
-                            : "\(gallery.items.count) images affichées."
+                            ? "1 image displayed."
+                            : "\(gallery.items.count) images displayed."
                     }
 
                 case .copyImages:
                     let result = try await imageSummaryWithFuzzyFallback(parsedQuery)
                     let summary = result.summary
                     if summary.imageCount == 0 {
-                        statusText = "Aucune image trouvée."
+                        statusText = "No images found."
                     } else {
                         pendingCopy = PendingCopy(query: result.query, summary: summary)
                         statusText = copyConfirmationText(for: result.query, summary: summary)
                     }
                 }
             } catch {
-                statusText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                statusText = userFacingMessage(for: error)
             }
         }
     }
@@ -95,31 +95,31 @@ final class SearchViewModel: ObservableObject {
                 withIntermediateDirectories: true
             )
         } catch {
-            statusText = "Impossible de créer le dossier : \(error.localizedDescription)"
+            statusText = "Could not create the folder."
             return
         }
 
         self.pendingCopy = nil
         isWorking = true
-        statusText = "Copie des images…"
+        statusText = "Copying images…"
 
         Task {
             defer { isWorking = false }
             do {
                 let result = try await mailService.copyImages(pendingCopy.query, to: destination)
                 statusText = result.imageCount == 1
-                    ? "1 image copiée dans \(destination.lastPathComponent)."
-                    : "\(result.imageCount) images copiées dans \(destination.lastPathComponent)."
+                    ? "1 image copied to \(destination.lastPathComponent)."
+                    : "\(result.imageCount) images copied to \(destination.lastPathComponent)."
                 NSWorkspace.shared.activateFileViewerSelecting([destination])
             } catch {
-                statusText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                statusText = userFacingMessage(for: error)
             }
         }
     }
 
     func cancelCopy() {
         pendingCopy = nil
-        statusText = "Copie annulée."
+        statusText = "Copy cancelled."
     }
 
     func saveSettings() {
@@ -130,15 +130,15 @@ final class SearchViewModel: ObservableObject {
             modelDraft = model.isEmpty ? "gpt-5.4-mini" : model
             showSettings = false
             statusText = usesOpenAI
-                ? "IA OpenAI activée."
-                : "Mode local activé."
+                ? "OpenAI is enabled."
+                : "Local mode is enabled."
         } catch {
-            statusText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            statusText = userFacingMessage(for: error)
         }
     }
 
     private func copyConfirmationText(for query: MailQuery, summary: MailMatchSummary) -> String {
-        let folder = query.destinationFolder?.nilIfBlank ?? "un dossier à choisir"
+        let folder = query.destinationFolder?.nilIfBlank ?? "a folder you choose"
         let emailWord = summary.messageCount == 1 ? "email" : "emails"
         let imageWord = summary.imageCount == 1 ? "image" : "images"
         return "\(summary.messageCount) \(emailWord) · \(summary.imageCount) \(imageWord) → \(folder)"
@@ -148,11 +148,11 @@ final class SearchViewModel: ObservableObject {
         let exactCount = try await mailService.searchAndOpen(query)
         guard exactCount == 0, query.needsSenderResolution else { return exactCount }
 
-        statusText = "Je cherche une orthographe proche du contact…"
+        statusText = "Looking for a similar contact name…"
         let resolved = try await mailService.resolvingSender(in: query)
         guard resolved.sender != query.sender else { return 0 }
 
-        statusText = "Contact probable : \(resolved.sender ?? query.sender ?? "") · nouvelle recherche…"
+        statusText = "Likely contact: \(resolved.sender ?? query.sender ?? "") · searching again…"
         return try await mailService.searchAndOpen(resolved)
     }
 
@@ -164,11 +164,11 @@ final class SearchViewModel: ObservableObject {
             return (query, exactSummary)
         }
 
-        statusText = "Je cherche une orthographe proche du contact…"
+        statusText = "Looking for a similar contact name…"
         let resolved = try await mailService.resolvingSender(in: query)
         guard resolved.sender != query.sender else { return (query, exactSummary) }
 
-        statusText = "Contact probable : \(resolved.sender ?? query.sender ?? "") · nouvelle recherche…"
+        statusText = "Likely contact: \(resolved.sender ?? query.sender ?? "") · searching again…"
         return (resolved, try await mailService.countImages(resolved))
     }
 
@@ -178,11 +178,11 @@ final class SearchViewModel: ObservableObject {
             return exactGallery
         }
 
-        statusText = "Je cherche une orthographe proche du contact…"
+        statusText = "Looking for a similar contact name…"
         let resolved = try await mailService.resolvingSender(in: query)
         guard resolved.sender != query.sender else { return exactGallery }
 
-        statusText = "Contact probable : \(resolved.sender ?? query.sender ?? "") · nouvelle recherche…"
+        statusText = "Likely contact: \(resolved.sender ?? query.sender ?? "") · searching again…"
         return try await mailService.galleryImages(resolved)
     }
 
@@ -198,14 +198,18 @@ final class SearchViewModel: ObservableObject {
         }
 
         let panel = NSOpenPanel()
-        panel.title = "Choisir le dossier des images"
-        panel.message = "Les images seront copiées dans ce dossier."
-        panel.prompt = "Copier ici"
+        panel.title = "Choose an Image Folder"
+        panel.message = "The images will be copied to this folder."
+        panel.prompt = "Copy Here"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func userFacingMessage(for error: Error) -> String {
+        (error as? MichelMailsError)?.errorDescription ?? "Something went wrong."
     }
 }
 

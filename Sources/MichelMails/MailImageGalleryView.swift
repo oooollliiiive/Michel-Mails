@@ -5,7 +5,7 @@ struct MailImageGalleryView: View {
     let gallery: MailImageGallery
 
     @State private var selectedIDs: Set<UUID> = []
-    @State private var statusMessage = "Cliquez pour sélectionner · double-cliquez pour ouvrir"
+    @State private var statusMessage = "Click to select · double-click to open"
 
     private let columns = [
         GridItem(.adaptive(minimum: 165, maximum: 240), spacing: 14)
@@ -50,16 +50,16 @@ struct MailImageGalleryView: View {
                 )
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Images reçues par email")
+                Text("Images received by email")
                     .font(.headline)
-                Text(gallery.items.count == 1 ? "1 image" : "\(gallery.items.count) images · plus récentes en premier")
+                Text(gallery.items.count == 1 ? "1 image" : "\(gallery.items.count) images · newest first")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Button(selectedIDs.count == gallery.items.count ? "Tout désélectionner" : "Tout sélectionner") {
+            Button(selectedIDs.count == gallery.items.count ? "Deselect All" : "Select All") {
                 if selectedIDs.count == gallery.items.count {
                     selectedIDs.removeAll()
                 } else {
@@ -85,7 +85,7 @@ struct MailImageGalleryView: View {
                 .lineLimit(1)
             Spacer()
             if !selectedIDs.isEmpty {
-                Text(selectedIDs.count == 1 ? "1 sélectionnée" : "\(selectedIDs.count) sélectionnées")
+                Text(selectedIDs.count == 1 ? "1 selected" : "\(selectedIDs.count) selected")
                     .fontWeight(.medium)
             }
         }
@@ -98,11 +98,11 @@ struct MailImageGalleryView: View {
     private var saveButtonTitle: String {
         switch selectedIDs.count {
         case 0:
-            return "Enregistrer…"
+            return "Save…"
         case 1:
-            return "Enregistrer l’image…"
+            return "Save Image…"
         default:
-            return "Enregistrer \(selectedIDs.count) images…"
+            return "Save \(selectedIDs.count) Images…"
         }
     }
 
@@ -149,15 +149,15 @@ struct MailImageGalleryView: View {
             NSWorkspace.shared.open(item.cachedURL)
         }
         .contextMenu {
-            Button("Ouvrir") {
+            Button("Open") {
                 NSWorkspace.shared.open(item.cachedURL)
             }
-            Button("Enregistrer cette image…") {
+            Button("Save This Image…") {
                 saveSingle(item)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.displayName)\(selected ? ", sélectionnée" : "")")
+        .accessibilityLabel("\(item.displayName)\(selected ? ", selected" : "")")
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
@@ -167,7 +167,7 @@ struct MailImageGalleryView: View {
         } else {
             selectedIDs.insert(item.id)
         }
-        statusMessage = "Sélectionnez une ou plusieurs images à enregistrer"
+        statusMessage = "Select one or more images to save"
     }
 
     private func saveSelected() {
@@ -180,9 +180,9 @@ struct MailImageGalleryView: View {
         }
 
         let panel = NSOpenPanel()
-        panel.title = "Enregistrer les images sélectionnées"
-        panel.message = "Choisissez le dossier de destination."
-        panel.prompt = "Enregistrer ici"
+        panel.title = "Save Selected Images"
+        panel.message = "Choose a destination folder."
+        panel.prompt = "Save Here"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
@@ -197,17 +197,17 @@ struct MailImageGalleryView: View {
                 try FileManager.default.copyItem(at: item.cachedURL, to: destination)
                 savedURLs.append(destination)
             }
-            statusMessage = "\(savedURLs.count) images enregistrées dans \(directory.lastPathComponent)"
+            statusMessage = "\(savedURLs.count) images saved to \(directory.lastPathComponent)"
             NSWorkspace.shared.activateFileViewerSelecting(savedURLs)
         } catch {
-            statusMessage = "Impossible d’enregistrer : \(error.localizedDescription)"
+            statusMessage = "Could not save the selected images."
         }
     }
 
     private func saveSingle(_ item: MailImageItem) {
         let panel = NSSavePanel()
-        panel.title = "Enregistrer l’image"
-        panel.prompt = "Enregistrer"
+        panel.title = "Save Image"
+        panel.prompt = "Save"
         panel.nameFieldStringValue = item.displayName
 
         guard panel.runModal() == .OK, let destination = panel.url else { return }
@@ -217,10 +217,10 @@ struct MailImageGalleryView: View {
                 try FileManager.default.removeItem(at: destination)
             }
             try FileManager.default.copyItem(at: item.cachedURL, to: destination)
-            statusMessage = "Image enregistrée : \(destination.lastPathComponent)"
+            statusMessage = "Image saved: \(destination.lastPathComponent)"
             NSWorkspace.shared.activateFileViewerSelecting([destination])
         } catch {
-            statusMessage = "Impossible d’enregistrer : \(error.localizedDescription)"
+            statusMessage = "Could not save the image."
         }
     }
 
@@ -258,7 +258,7 @@ private struct GalleryThumbnail: View {
             VStack(spacing: 7) {
                 Image(systemName: "photo.badge.exclamationmark")
                     .font(.title)
-                Text("Aperçu indisponible")
+                Text("Preview unavailable")
                     .font(.caption2)
             }
             .foregroundStyle(.secondary)

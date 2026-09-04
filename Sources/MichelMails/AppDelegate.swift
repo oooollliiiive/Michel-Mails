@@ -7,7 +7,7 @@ final class PromptPanel: NSPanel {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var panel: PromptPanel?
     private var galleryWindow: NSWindow?
     private var statusItem: NSStatusItem?
@@ -54,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "Images reçues par email"
+            window.title = "Email Images"
             window.minSize = NSSize(width: 690, height: 480)
             window.isReleasedWhenClosed = false
             if !window.setFrameUsingName("MichelMailsGalleryWindow") {
@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let defaultFrame = NSRect(x: 0, y: 0, width: 720, height: 132)
         let panel = PromptPanel(
             contentRect: defaultFrame,
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -89,8 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.delegate = self
+        panel.contentMinSize = defaultFrame.size
+        panel.contentMaxSize = defaultFrame.size
+        panel.standardWindowButton(.zoomButton)?.isHidden = false
+        panel.standardWindowButton(.zoomButton)?.isEnabled = false
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = false
         panel.contentView = NSHostingView(rootView: SearchView(viewModel: viewModel))
 
         if !panel.setFrameUsingName("MichelMailsPromptWindow") {
@@ -108,10 +112,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "Afficher Michel Mails", action: #selector(showPrompt), keyEquivalent: "m")
+        menu.addItem(withTitle: "Show Michel Mails", action: #selector(showPrompt), keyEquivalent: "m")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quitter", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
         item.menu = menu
         statusItem = item
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === panel else { return }
+        NSApp.terminate(nil)
     }
 }

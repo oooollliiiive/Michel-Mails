@@ -80,15 +80,15 @@ enum MichelMailsError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
-            return "Ajoutez une clé API OpenAI dans les réglages."
+            return "Add an OpenAI API key in Settings."
         case .invalidAPIResponse:
-            return "La réponse de l’IA n’a pas pu être interprétée."
+            return "The AI response could not be understood."
         case .openAI(let message):
-            return "Erreur OpenAI : \(message)"
+            return "OpenAI error: \(message)"
         case .mail(let message):
-            return "Erreur Mail : \(message)"
+            return "Mail error: \(message)"
         case .keychain(let status):
-            return "Le trousseau macOS a retourné l’erreur \(status)."
+            return "macOS Keychain returned error \(status)."
         }
     }
 }

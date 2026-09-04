@@ -90,7 +90,7 @@ final class MailService {
         ] as CFDictionary
         guard AXIsProcessTrustedWithOptions(accessibilityOptions) else {
             throw MichelMailsError.mail(
-                "Autorisez Michel Mails dans Réglages Système › Confidentialité et sécurité › Accessibilité, puis relancez la recherche."
+                "Allow Michel Mails in System Settings › Privacy & Security › Accessibility, then try again."
             )
         }
 
@@ -102,22 +102,26 @@ final class MailService {
         } else {
             let MailURL = URL(fileURLWithPath: "/System/Applications/Mail.app")
             guard NSWorkspace.shared.open(MailURL) else {
-                throw MichelMailsError.mail("Impossible d’ouvrir Apple Mail.")
+                throw MichelMailsError.mail("Could not open Apple Mail.")
             }
             try await Task.sleep(nanoseconds: 700_000_000)
             guard let launched = NSRunningApplication
                 .runningApplications(withBundleIdentifier: bundleIdentifier)
                 .first else {
-                throw MichelMailsError.mail("Apple Mail ne s’est pas lancé.")
+                throw MichelMailsError.mail("Apple Mail did not launch.")
             }
             MailApplication = launched
             launched.activate(options: [.activateAllWindows])
         }
 
-        _ = try? await Self.runAppleScript(Self.searchScopeScript, arguments: [])
+        let viewerCountText = try await Self.runAppleScript(Self.prepareSearchViewerScript, arguments: [])
+        let viewerCount = Int(viewerCountText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        guard viewerCount > 0 else {
+            throw MichelMailsError.mail("Mail could not create a message window. Open a Mail window and try again.")
+        }
         try await Task.sleep(nanoseconds: 450_000_000)
         guard let source = CGEventSource(stateID: .hidSystemState) else {
-            throw MichelMailsError.mail("Impossible de contrôler le champ de recherche de Mail.")
+            throw MichelMailsError.mail("Could not control Mail’s search field.")
         }
 
         postCommandKey(3, source: source, processIdentifier: MailApplication.processIdentifier)
@@ -273,18 +277,29 @@ final class MailService {
                 let message = error.trimmingCharacters(in: .whitespacesAndNewlines)
                 if message.contains("-1743") || message.localizedCaseInsensitiveContains("not authorized") {
                     throw MichelMailsError.mail(
-                        "Autorisez Michel Mails dans Réglages Système › Confidentialité et sécurité › Automatisation."
+                        "Allow Michel Mails to control Mail in System Settings › Privacy & Security › Automation."
                     )
                 }
-                throw MichelMailsError.mail(message.isEmpty ? "Apple Mail n’a pas répondu." : message)
+                throw MichelMailsError.mail("Apple Mail did not respond.")
             }
             return output
         }.value
     }
 
-    private static let searchScopeScript = #"""
+    private static let prepareSearchViewerScript = #"""
     tell application "Mail"
-        if (count of message viewers) is 0 then return
+        activate
+        if (count of message viewers) is 0 then
+            try
+                make new message viewer
+            on error
+                try
+                    open inbox
+                end try
+            end try
+        end if
+        if (count of message viewers) is 0 then return "0"
+
         set searchBoxes to {}
         repeat with anAccount in every account
             try
@@ -296,6 +311,7 @@ final class MailService {
                 set selected mailboxes of message viewer 1 to searchBoxes
             end try
         end if
+        return (count of message viewers) as text
     end tell
     """#
 

@@ -18,7 +18,7 @@ struct SearchView: View {
                     )
 
                 TextField(
-                    "Ex. Montre-moi les 10 dernières images reçues par email",
+                    "e.g. Show me the 10 latest images received by email",
                     text: $viewModel.prompt
                 )
                 .textFieldStyle(.plain)
@@ -40,7 +40,7 @@ struct SearchView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(viewModel.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Lancer la recherche")
+                    .help("Search")
                 }
 
                 Button {
@@ -52,7 +52,7 @@ struct SearchView: View {
                         .frame(width: 26, height: 26)
                 }
                 .buttonStyle(.plain)
-                .help("Réglages")
+                .help("Settings")
             }
 
             HStack(spacing: 8) {
@@ -67,13 +67,13 @@ struct SearchView: View {
                 Spacer(minLength: 8)
 
                 if viewModel.pendingCopy != nil {
-                    Button("Annuler", action: viewModel.cancelCopy)
+                    Button("Cancel", action: viewModel.cancelCopy)
                         .controlSize(.small)
-                    Button("Copier", action: viewModel.confirmCopy)
+                    Button("Copy", action: viewModel.confirmCopy)
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
                 } else {
-                    Text(viewModel.usesOpenAI ? "IA" : "LOCAL")
+                    Text(viewModel.usesOpenAI ? "AI" : "LOCAL")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .foregroundStyle(viewModel.usesOpenAI ? Color.purple : Color.secondary)
                         .padding(.horizontal, 6)
@@ -103,9 +103,11 @@ struct SearchView: View {
     private var statusSymbol: String {
         if viewModel.isWorking { return "ellipsis" }
         if viewModel.pendingCopy != nil { return "photo.stack" }
-        if viewModel.statusText.localizedCaseInsensitiveContains("aucun") ||
-            viewModel.statusText.localizedCaseInsensitiveContains("erreur") ||
-            viewModel.statusText.localizedCaseInsensitiveContains("impossible") {
+        if viewModel.statusText.localizedCaseInsensitiveContains("no ") ||
+            viewModel.statusText.localizedCaseInsensitiveContains("error") ||
+            viewModel.statusText.localizedCaseInsensitiveContains("unable") ||
+            viewModel.statusText.localizedCaseInsensitiveContains("could not") ||
+            viewModel.statusText.localizedCaseInsensitiveContains("failed") {
             return "exclamationmark.circle"
         }
         return "checkmark.circle"
@@ -124,9 +126,9 @@ private struct SettingsView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Intelligence artificielle")
+                    Text("Artificial Intelligence")
                         .font(.title2.weight(.semibold))
-                    Text("La clé est conservée dans le trousseau de ce Mac.")
+                    Text("Your key is stored in this Mac’s Keychain.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -142,19 +144,19 @@ private struct SettingsView: View {
             }
 
             Form {
-                SecureField("Clé API OpenAI", text: $viewModel.APIKeyDraft)
-                TextField("Modèle", text: $viewModel.modelDraft)
+                SecureField("OpenAI API key", text: $viewModel.APIKeyDraft)
+                TextField("Model", text: $viewModel.modelDraft)
             }
             .formStyle(.grouped)
 
-            Text("Seuls le prompt et la date courante sont envoyés à OpenAI. Le contenu des emails reste sur le Mac.")
+            Text("Only your prompt and the current date are sent to OpenAI. Email contents stay on this Mac.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
             HStack {
                 Spacer()
-                Button("Annuler") { dismiss() }
-                Button("Enregistrer", action: viewModel.saveSettings)
+                Button("Cancel") { dismiss() }
+                Button("Save", action: viewModel.saveSettings)
                     .buttonStyle(.borderedProminent)
             }
         }
