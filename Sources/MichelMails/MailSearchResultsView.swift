@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MailSearchResultsView: View {
     let results: MailSearchResults
+    @ObservedObject var indexController: MailIndexController
     let onOpenEmail: (MailMessageItem) -> Void
 
     @State private var selectedID: UUID?
@@ -13,6 +14,9 @@ struct MailSearchResultsView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if !indexController.progress.isFinished {
+                scanNotice
+            }
             Divider()
 
             ScrollView {
@@ -35,6 +39,20 @@ struct MailSearchResultsView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    private var scanNotice: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+            Text("Email scan not finished — results may be incomplete")
+            Spacer()
+            Text(indexController.progress.statusText)
+        }
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 18)
+        .frame(height: 30)
+        .background(Color.orange.opacity(0.08))
+    }
+
     private var header: some View {
         HStack(spacing: 12) {
             Image(systemName: "sparkle.magnifyingglass")
@@ -50,7 +68,7 @@ struct MailSearchResultsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Email results")
                     .font(.headline)
-                Text(results.items.count == 1 ? "1 email" : "\(results.items.count) emails · newest first")
+                Text(resultSummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -66,6 +84,12 @@ struct MailSearchResultsView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .background(.ultraThinMaterial)
+    }
+
+    private var resultSummary: String {
+        let count = results.items.count == 1 ? "1 email" : "\(results.items.count) emails"
+        let order = results.query.sortOrder == .oldestFirst ? "oldest first" : "newest first"
+        return "\(count) · \(order)"
     }
 
     private var footer: some View {

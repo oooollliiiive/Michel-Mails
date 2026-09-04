@@ -18,7 +18,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var resultsWindow: NSWindow?
     private var galleryWindow: NSWindow?
     private var statusItem: NSStatusItem?
-    private let viewModel = SearchViewModel()
+    private let indexController: MailIndexController
+    private let viewModel: SearchViewModel
+
+    override init() {
+        let indexController = MailIndexController()
+        self.indexController = indexController
+        self.viewModel = SearchViewModel(indexController: indexController)
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -33,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         configureStatusItem()
         showPrompt()
+        indexController.start()
     }
 
     func applicationShouldHandleReopen(
@@ -67,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "Email Images"
+            window.title = "Email Files"
             window.minSize = NSSize(width: 690, height: 480)
             window.isReleasedWhenClosed = false
             if !window.setFrameUsingName("MichelMailsGalleryWindow") {
@@ -80,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentView = NSHostingView(
             rootView: MailImageGalleryView(
                 gallery: gallery,
+                indexController: indexController,
                 onOpenEmail: { [weak self] message in
                     self?.viewModel.openMessage(message)
                 }
@@ -113,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentView = NSHostingView(
             rootView: MailSearchResultsView(
                 results: results,
+                indexController: indexController,
                 onOpenEmail: { [weak self] message in
                     self?.viewModel.openMessage(message)
                 }
@@ -142,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.backgroundColor = .clear
@@ -159,7 +171,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.standardWindowButton(.zoomButton)?.isHidden = false
         panel.standardWindowButton(.zoomButton)?.isEnabled = false
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = false
-        panel.contentView = NSHostingView(rootView: SearchView(viewModel: viewModel))
+        panel.contentView = NSHostingView(
+            rootView: SearchView(viewModel: viewModel, indexController: indexController)
+        )
 
         if !panel.setFrameUsingName("MichelMailsPromptWindow") {
             panel.center()

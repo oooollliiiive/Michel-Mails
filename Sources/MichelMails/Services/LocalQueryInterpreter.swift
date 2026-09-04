@@ -11,11 +11,14 @@ struct LocalQueryInterpreter {
         var query = MailQuery()
         query.language = detectLanguage(normalized)
         query.hasImage = containsAny(normalized, ["photo", "photos", "image", "images", "picture", "pictures", "jpg", "jpeg", "png", "heic"])
-        query.hasAttachment = query.hasImage || containsAny(normalized, ["piece jointe", "pieces jointes", "attachment", "attachments", "pdf"])
+        query.attachmentKinds = attachmentKinds(in: normalized)
+        query.hasAttachment = query.hasImage || !query.attachmentKinds.isEmpty || containsAny(normalized, ["piece jointe", "pieces jointes", "attachment", "attachments", "fichier", "fichiers", "file", "files"])
         if containsAny(normalized, ["copie", "copier", "enregistre", "sauvegarde", "copy", "save", "export"]) {
             query.action = .copyImages
         } else if requestsImageGallery(normalized) {
             query.action = .showImages
+        } else if requestsFileGallery(normalized) {
+            query.action = .showFiles
         } else {
             query.action = .search
         }
@@ -28,6 +31,9 @@ struct LocalQueryInterpreter {
         query.destinationFolder = extractDestination(from: prompt)
         query.limit = extractLimit(from: normalized) ?? 25
         query.allResults = containsAny(normalized, ["tous", "toutes", "all ", "every "])
+        if normalized.range(of: #"\b(?:plus\s+vieux|plus\s+vieilles?|anciens?|anciennes?|oldest|earliest|least\s+recent)\b"#, options: .regularExpression) != nil {
+            query.sortOrder = .oldestFirst
+        }
         query.confidence = 0.55
 
         if containsAny(normalized, ["aujourd'hui", "aujourdhui", "today"]) {
@@ -71,6 +77,27 @@ struct LocalQueryInterpreter {
         return imageRange.lowerBound < emailRange.lowerBound
     }
 
+    private func requestsFileGallery(_ text: String) -> Bool {
+        containsAny(text, ["montre", "affiche", "voir", "show", "display", "browse", "liste", "list"]) &&
+            containsAny(text, [
+                "piece jointe", "pieces jointes", "attachment", "attachments", "fichier", "fichiers",
+                "file", "files", "pdf", "document", "documents", "spreadsheet", "presentation", "archive"
+            ])
+    }
+
+    private func attachmentKinds(in text: String) -> [MailAttachmentKind] {
+        var kinds: [MailAttachmentKind] = []
+        if containsAny(text, ["photo", "photos", "image", "images", "picture", "pictures", "jpg", "jpeg", "png", "heic"]) { kinds.append(.image) }
+        if containsAny(text, ["pdf"]) { kinds.append(.pdf) }
+        if containsAny(text, ["document", "documents", "docx", "word", "texte", "text file"]) { kinds.append(.document) }
+        if containsAny(text, ["spreadsheet", "tableur", "excel", "xlsx", "numbers", "csv"]) { kinds.append(.spreadsheet) }
+        if containsAny(text, ["presentation", "powerpoint", "pptx", "keynote", "slides"]) { kinds.append(.presentation) }
+        if containsAny(text, ["archive", "archives", "zip", "rar"]) { kinds.append(.archive) }
+        if containsAny(text, ["audio", "mp3", "wav", "music", "musique"]) { kinds.append(.audio) }
+        if containsAny(text, ["video", "videos", "movie", "film", "mp4", "mov"]) { kinds.append(.video) }
+        return kinds
+    }
+
     private func detectLanguage(_ text: String) -> String {
         let french = ["trouve", "mail", "courriel", "de", "avec", "dernier", "copie", "dossier"]
         let english = ["find", "email", "from", "with", "last", "copy", "folder"]
@@ -109,7 +136,7 @@ struct LocalQueryInterpreter {
     }
 
     private func extractLimit(from text: String) -> Int? {
-        let pattern = #"\b([1-9][0-9]?)\s+(?:derniers?|dernieres?|latest|last|emails?|mails?)\b"#
+        let pattern = #"\b([1-9][0-9]?)\s+(?:(?:plus\s+)?(?:vieux|vieilles?|anciens?|anciennes?|oldest|earliest)\s+)?(?:derniers?|dernieres?|latest|last|emails?|mails?|fichiers?|files?|photos?|images?)\b"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let range = Range(match.range(at: 1), in: text) else { return nil }
@@ -124,7 +151,9 @@ struct LocalQueryInterpreter {
             "dernier", "derniers", "derniere", "dernieres", "latest", "last", "avec", "with", "qui", "ont",
             "une", "photo", "photos", "image", "images", "picture", "pictures", "piece", "jointe", "attachment",
             "copie", "copier", "copy", "dans", "dossier", "folder", "aujourd", "hui", "hier", "semaine", "mois",
-            "recu", "recue", "recus", "recues", "received", "incoming"
+            "recu", "recue", "recus", "recues", "received", "incoming", "plus", "vieux", "vieille", "vieilles",
+            "ancien", "anciens", "ancienne", "anciennes", "oldest", "earliest", "recent", "pdf", "fichier", "fichiers",
+            "file", "files", "document", "documents"
         ])
         let senderWords = Set((sender ?? "").lowercased().split(separator: " ").map(String.init))
         return text

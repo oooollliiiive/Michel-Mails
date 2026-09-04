@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SearchView: View {
     @ObservedObject var viewModel: SearchViewModel
+    @ObservedObject var indexController: MailIndexController
     @FocusState private var promptIsFocused: Bool
 
     var body: some View {
@@ -83,6 +84,21 @@ struct SearchView: View {
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
+
+                if indexController.isAvailable {
+                    Text(indexController.progress.statusText)
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(indexController.progress.isFinished ? Color.secondary : Color.orange)
+                        .lineLimit(1)
+                        .help(indexController.progress.isFinished
+                            ? "Email scan complete"
+                            : "Email scan not finished — results may be incomplete")
+                } else {
+                    Text("Email scan unavailable")
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
 
                 if viewModel.pendingCopy != nil {
                     Button("Cancel", action: viewModel.cancelCopy)

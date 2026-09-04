@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import ImageIO
 
 @MainActor
 final class MailService {
@@ -54,21 +55,33 @@ final class MailService {
         var imageQuery = query
         imageQuery.hasImage = true
         imageQuery.hasAttachment = true
+        if imageQuery.attachmentKinds.isEmpty {
+            imageQuery.attachmentKinds = [.image]
+        }
+        return try await galleryFiles(imageQuery)
+    }
+
+    func galleryFiles(_ query: MailQuery) async throws -> MailImageGallery {
+        var fileQuery = query
+        fileQuery.hasAttachment = true
 
         let cacheDirectory = try prepareGalleryCache()
-        try await performMailSearch(imageQuery)
+        try await performMailSearch(fileQuery)
+        let mode = fileQuery.action == .showFiles ? "gallery_files" : "gallery_images"
         let output = try await Self.runAppleScript(
             Self.filterScript,
             arguments: scriptArguments(
-                mode: "gallery_images",
-                query: imageQuery,
+                mode: mode,
+                query: fileQuery,
                 destination: cacheDirectory.path
             )
         )
         NSApp.activate(ignoringOtherApps: true)
+        let items = MailScriptRecordParser.files(from: output, in: cacheDirectory)
+            .filter { $0.kind != .image || Self.isUsefulVisualAttachment(at: $0.cachedURL) }
         return MailImageGallery(
-            items: MailScriptRecordParser.images(from: output, in: cacheDirectory),
-            query: imageQuery
+            items: items,
+            query: fileQuery
         )
     }
 
@@ -206,7 +219,9 @@ final class MailService {
             query.hasImage ? "true" : "false",
             String(effectiveLimit),
             destination,
-            query.direction.rawValue
+            query.direction.rawValue,
+            query.attachmentKinds.map(\.rawValue).joined(separator: ","),
+            query.sortOrder.rawValue
         ]
     }
 
@@ -236,6 +251,28 @@ final class MailService {
             messageCount: parts.first.flatMap { Int($0) } ?? 0,
             imageCount: parts.dropFirst().first.flatMap { Int($0) } ?? 0
         )
+    }
+
+    private static func isUsefulVisualAttachment(at URL: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(URL as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+              width > 0,
+              height > 0 else {
+            return true
+        }
+
+        let shortEdge = min(width, height)
+        let longEdge = max(width, height)
+        let byteCount = (try? URL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+
+        // Email signatures are usually tiny, extremely wide, or short lightweight
+        // banners. Combining dimensions and bytes avoids rejecting ordinary photos.
+        if longEdge < 160 || shortEdge < 64 { return false }
+        if longEdge / shortEdge > 10 { return false }
+        if height < 180 && width < 1_000 && byteCount < 100_000 { return false }
+        return true
     }
 
     private func postCommandKey(
@@ -406,6 +443,8 @@ final class MailService {
         set maximumResults to (item 6 of argv) as integer
         set destinationFolder to item 7 of argv
         set directionMode to item 8 of argv
+        set attachmentKindsText to item 9 of argv
+        set sortOrderText to item 10 of argv
         set unitSeparator to ASCII character 31
         set recordSeparator to ASCII character 30
 
@@ -435,7 +474,7 @@ final class MailService {
                 set originalSortColumn to sort column of targetViewer
                 set originalSortAscending to sorted ascending of targetViewer
                 set sort column of targetViewer to date received column
-                set sorted ascending of targetViewer to false
+                set sorted ascending of targetViewer to (sortOrderText is "oldest_first")
             end try
             set candidates to visible messages of targetViewer
 
@@ -444,6 +483,10 @@ final class MailService {
                     set matchedCount to matchedCount + 1
                     set usefulImages to my usefulImageAttachments(aMessage)
                     set imageCount to imageCount + (count of usefulImages)
+                    set galleryAttachments to usefulImages
+                    if operationMode is "gallery_files" then
+                        set galleryAttachments to my usefulFileAttachments(aMessage, attachmentKindsText)
+                    end if
 
                     if operationMode is "list_messages" then
                         set end of resultRows to my messageRow(aMessage, unitSeparator, recordSeparator)
@@ -455,15 +498,12 @@ final class MailService {
                                 set safeAttachmentName to my safeFileName(name of anAttachment)
                                 set targetName to my paddedNumber(copiedCount) & "-" & safeSubject & "-" & safeAttachmentName
                                 save anAttachment in POSIX file (destinationFolder & "/" & targetName)
-                                set attachmentName to my cleanField(name of anAttachment, unitSeparator, recordSeparator)
-                                set messageData to my messageRow(aMessage, unitSeparator, recordSeparator)
-                                set end of imageRows to my cleanField(targetName, unitSeparator, recordSeparator) & unitSeparator & attachmentName & unitSeparator & messageData
                             on error
                                 set copiedCount to copiedCount - 1
                             end try
                         end repeat
-                    else if operationMode is "gallery_images" then
-                        repeat with anAttachment in usefulImages
+                    else if operationMode is "gallery_images" or operationMode is "gallery_files" then
+                        repeat with anAttachment in galleryAttachments
                             if copiedCount ≥ maximumResults then exit repeat
                             try
                                 set copiedCount to copiedCount + 1
@@ -471,6 +511,13 @@ final class MailService {
                                 set safeAttachmentName to my safeFileName(name of anAttachment)
                                 set targetName to my paddedNumber(copiedCount) & "-" & safeSubject & "-" & safeAttachmentName
                                 save anAttachment in POSIX file (destinationFolder & "/" & targetName)
+                                set attachmentName to my cleanField(name of anAttachment, unitSeparator, recordSeparator)
+                                set attachmentMIME to ""
+                                try
+                                    set attachmentMIME to my cleanField(MIME type of anAttachment, unitSeparator, recordSeparator)
+                                end try
+                                set messageData to my messageRow(aMessage, unitSeparator, recordSeparator)
+                                set end of imageRows to my cleanField(targetName, unitSeparator, recordSeparator) & unitSeparator & attachmentName & unitSeparator & attachmentMIME & unitSeparator & messageData
                             on error
                                 set copiedCount to copiedCount - 1
                             end try
@@ -478,7 +525,7 @@ final class MailService {
                     end if
                 end if
                 if operationMode is "list_messages" and (count of resultRows) ≥ maximumResults then exit repeat
-                if operationMode is "gallery_images" and copiedCount ≥ maximumResults then exit repeat
+                if (operationMode is "gallery_images" or operationMode is "gallery_files") and copiedCount ≥ maximumResults then exit repeat
                 if (operationMode is "copy_images" or operationMode is "count_images") and matchedCount ≥ maximumResults then exit repeat
             end repeat
 
@@ -492,7 +539,7 @@ final class MailService {
 
         if operationMode is "list_messages" then
             return my joinRows(resultRows, recordSeparator)
-        else if operationMode is "gallery_images" then
+        else if operationMode is "gallery_images" or operationMode is "gallery_files" then
             return my joinRows(imageRows, recordSeparator)
         else if operationMode is "copy_images" then
             return matchedCount & "|" & copiedCount
@@ -647,8 +694,55 @@ final class MailService {
         return imageAttachments
     end usefulImageAttachments
 
+    on usefulFileAttachments(aMessage, attachmentKindsText)
+        set selectedAttachments to {}
+        tell application "Mail"
+            try
+                repeat with anAttachment in every mail attachment of aMessage
+                    set attachmentName to ""
+                    set MIMEText to ""
+                    set attachmentSize to 0
+                    try
+                        set attachmentName to name of anAttachment as text
+                    end try
+                    try
+                        set MIMEText to MIME type of anAttachment as text
+                    end try
+                    try
+                        set attachmentSize to file size of anAttachment
+                    end try
+
+                    set attachmentKind to my fileKind(attachmentName, MIMEText)
+                    ignoring case
+                        set looksLikeDecoration to attachmentName contains "signature" or attachmentName contains "logo" or attachmentName contains "spacer" or attachmentName contains "tracking" or attachmentName contains "icon"
+                    end ignoring
+                    set requestedKind to attachmentKindsText is "" or ("," & attachmentKindsText & ",") contains ("," & attachmentKind & ",")
+                    set usefulFile to not looksLikeDecoration and attachmentSize > 0
+                    if attachmentKind is "image" and attachmentSize < 5000 then set usefulFile to false
+
+                    if requestedKind and usefulFile then set end of selectedAttachments to contents of anAttachment
+                end repeat
+            end try
+        end tell
+        return selectedAttachments
+    end usefulFileAttachments
+
+    on fileKind(attachmentName, MIMEText)
+        ignoring case
+            if MIMEText starts with "image/" or attachmentName ends with ".jpg" or attachmentName ends with ".jpeg" or attachmentName ends with ".png" or attachmentName ends with ".heic" or attachmentName ends with ".gif" or attachmentName ends with ".webp" or attachmentName ends with ".tif" or attachmentName ends with ".tiff" then return "image"
+            if MIMEText is "application/pdf" or attachmentName ends with ".pdf" then return "pdf"
+            if attachmentName ends with ".doc" or attachmentName ends with ".docx" or attachmentName ends with ".rtf" or attachmentName ends with ".txt" or attachmentName ends with ".pages" then return "document"
+            if attachmentName ends with ".xls" or attachmentName ends with ".xlsx" or attachmentName ends with ".csv" or attachmentName ends with ".numbers" then return "spreadsheet"
+            if attachmentName ends with ".ppt" or attachmentName ends with ".pptx" or attachmentName ends with ".key" then return "presentation"
+            if attachmentName ends with ".zip" or attachmentName ends with ".rar" or attachmentName ends with ".7z" or attachmentName ends with ".tar" or attachmentName ends with ".gz" then return "archive"
+            if MIMEText starts with "audio/" then return "audio"
+            if MIMEText starts with "video/" then return "video"
+        end ignoring
+        return "other"
+    end fileKind
+
     on safeFileName(sourceText)
-        if sourceText is missing value or sourceText is "" then set sourceText to "image"
+        if sourceText is missing value or sourceText is "" then set sourceText to "file"
         set invalidCharacters to {"/", ":", return, linefeed, tab}
         set cleaned to sourceText as text
         repeat with invalidCharacter in invalidCharacters

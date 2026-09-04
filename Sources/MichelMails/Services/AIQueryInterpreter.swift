@@ -41,14 +41,14 @@ actor AIQueryInterpreter {
         let currentDate = formatter.string(from: Date())
 
         let instructions = """
-        You translate a person's natural-language request about their Apple Mail messages into a structured query. The user may write French, English, mix both languages, make spelling mistakes, omit accents, use nicknames, or use relative dates. Preserve the sender text exactly as understood; another local component resolves it against real correspondents. Never invent message data. Use copy_images only when the user explicitly asks to copy, save, or export images. Use show_images when the user asks to see or display the images/photos themselves, such as “montre-moi les 10 dernières images reçues par email”. Use search when the user asks for emails, including emails that contain images. Set has_image for photos, screenshots, scans, pictures, or image files. Set direction to received for received/incoming/reçus messages, sent only for messages sent by the user, and any when unspecified. Dates must be ISO 8601 or empty. Today is \(currentDate). Keep only meaningful content terms in keywords. If no count is given, use 25. Set all_results only when the person explicitly says all, tous, toutes, every, or equivalent. destination_folder is a requested folder name or path, otherwise empty.
+        You translate a person's natural-language request about their Apple Mail messages into a structured query. The user may write French, English, mix both languages, make spelling mistakes, omit accents, use nicknames, or use relative dates. Preserve the sender text exactly as understood; another local component resolves it against real correspondents. Never invent message data. Use copy_images only when the user explicitly asks to copy, save, or export images. Use show_images when the user asks to see or display images/photos themselves. Use show_files when the user asks to see, display, browse, or list attachments such as PDFs, documents, spreadsheets, presentations, archives, audio, or video. Use search when the user asks for emails, including emails that contain files. Set attachment_kinds to every requested file category, or an empty array when no category is requested. Set has_image for photos, screenshots, scans, pictures, or image files. Set direction to received for received/incoming/reçus messages, sent only for messages sent by the user, and any when unspecified. Set sort_order to oldest_first for any request meaning oldest, earliest, least recent, plus vieux, or ancien, regardless of its exact wording; otherwise use newest_first. Dates must be ISO 8601 or empty. Today is \(currentDate). Keep only meaningful content terms in keywords, never temporal or sorting language. If no count is given, use 25. Set all_results only when the person explicitly says all, tous, toutes, every, or equivalent. destination_folder is a requested folder name or path, otherwise empty.
         """
 
         let schema: [String: Any] = [
             "type": "object",
             "additionalProperties": false,
             "properties": [
-                "action": ["type": "string", "enum": ["search", "show_images", "copy_images"]],
+                "action": ["type": "string", "enum": ["search", "show_images", "show_files", "copy_images"]],
                 "direction": ["type": "string", "enum": ["any", "received", "sent"]],
                 "sender": ["type": "string"],
                 "keywords": ["type": "array", "items": ["type": "string"], "maxItems": 8],
@@ -59,12 +59,19 @@ actor AIQueryInterpreter {
                 "limit": ["type": "integer", "minimum": 1, "maximum": 100],
                 "all_results": ["type": "boolean"],
                 "destination_folder": ["type": "string"],
+                "attachment_kinds": [
+                    "type": "array",
+                    "items": ["type": "string", "enum": MailAttachmentKind.allCases.map(\.rawValue)],
+                    "maxItems": MailAttachmentKind.allCases.count
+                ],
+                "sort_order": ["type": "string", "enum": ["newest_first", "oldest_first"]],
                 "language": ["type": "string", "enum": ["fr", "en", "mixed"]],
                 "confidence": ["type": "number", "minimum": 0, "maximum": 1]
             ],
             "required": [
                 "action", "direction", "sender", "keywords", "start_date", "end_date", "has_image",
-                "has_attachment", "limit", "all_results", "destination_folder", "language", "confidence"
+                "has_attachment", "limit", "all_results", "destination_folder", "attachment_kinds",
+                "sort_order", "language", "confidence"
             ]
         ]
 
@@ -121,6 +128,8 @@ private struct AIMailQuery: Decodable {
     let limit: Int
     let allResults: Bool
     let destinationFolder: String
+    let attachmentKinds: [MailAttachmentKind]
+    let sortOrder: MailSortOrder
     let language: String
     let confidence: Double
 
@@ -132,6 +141,8 @@ private struct AIMailQuery: Decodable {
         case hasAttachment = "has_attachment"
         case allResults = "all_results"
         case destinationFolder = "destination_folder"
+        case attachmentKinds = "attachment_kinds"
+        case sortOrder = "sort_order"
     }
 
     var mailQuery: MailQuery {
@@ -147,6 +158,8 @@ private struct AIMailQuery: Decodable {
             limit: min(max(limit, 1), 100),
             allResults: allResults,
             destinationFolder: destinationFolder.nilIfBlank,
+            attachmentKinds: attachmentKinds,
+            sortOrder: sortOrder,
             language: language,
             confidence: confidence
         )

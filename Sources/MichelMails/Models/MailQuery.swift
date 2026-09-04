@@ -3,6 +3,7 @@ import Foundation
 enum MailAction: String, Codable, Sendable {
     case search
     case showImages = "show_images"
+    case showFiles = "show_files"
     case copyImages = "copy_images"
 }
 
@@ -10,6 +11,23 @@ enum MailDirection: String, Codable, Sendable {
     case any
     case received
     case sent
+}
+
+enum MailSortOrder: String, Codable, Sendable {
+    case newestFirst = "newest_first"
+    case oldestFirst = "oldest_first"
+}
+
+enum MailAttachmentKind: String, Codable, CaseIterable, Sendable {
+    case image
+    case pdf
+    case document
+    case spreadsheet
+    case presentation
+    case archive
+    case audio
+    case video
+    case other
 }
 
 struct MailQuery: Codable, Equatable, Sendable {
@@ -24,6 +42,8 @@ struct MailQuery: Codable, Equatable, Sendable {
     var limit = 25
     var allResults = false
     var destinationFolder: String?
+    var attachmentKinds: [MailAttachmentKind] = []
+    var sortOrder: MailSortOrder = .newestFirst
     var language = "fr"
     var confidence = 0.5
 
@@ -57,6 +77,8 @@ struct MailImageItem: Identifiable, Equatable, Sendable {
     let id = UUID()
     let cachedURL: URL
     let displayName: String
+    let MIMEType: String
+    let kind: MailAttachmentKind
     let message: MailMessageItem
 }
 
@@ -88,18 +110,24 @@ enum MailScriptRecordParser {
         }
     }
 
-    static func images(from output: String, in directory: URL) -> [MailImageItem] {
+    static func files(from output: String, in directory: URL) -> [MailImageItem] {
         rows(from: output).compactMap { fields in
-            guard fields.count == 8,
-                  let message = message(from: fields, offset: 2) else { return nil }
+            guard fields.count == 9,
+                  let message = message(from: fields, offset: 3) else { return nil }
             let cachedURL = directory.appendingPathComponent(fields[0])
             guard FileManager.default.fileExists(atPath: cachedURL.path) else { return nil }
             return MailImageItem(
                 cachedURL: cachedURL,
                 displayName: fields[1].nilIfEmpty ?? fields[0],
+                MIMEType: fields[2],
+                kind: attachmentKind(name: fields[1], MIMEType: fields[2]),
                 message: message
             )
         }
+    }
+
+    static func images(from output: String, in directory: URL) -> [MailImageItem] {
+        files(from: output, in: directory)
     }
 
     private static func rows(from output: String) -> [[String]] {
@@ -137,6 +165,22 @@ enum MailScriptRecordParser {
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         return formatter.date(from: value)
     }
+
+    private static func attachmentKind(name: String, MIMEType: String) -> MailAttachmentKind {
+        let MIME = MIMEType.lowercased()
+        let extensionName = URL(fileURLWithPath: name).pathExtension.lowercased()
+        if MIME.hasPrefix("image/") || ["jpg", "jpeg", "png", "heic", "gif", "webp", "tif", "tiff"].contains(extensionName) {
+            return .image
+        }
+        if MIME == "application/pdf" || extensionName == "pdf" { return .pdf }
+        if ["doc", "docx", "rtf", "txt", "pages"].contains(extensionName) { return .document }
+        if ["xls", "xlsx", "csv", "numbers"].contains(extensionName) { return .spreadsheet }
+        if ["ppt", "pptx", "key"].contains(extensionName) { return .presentation }
+        if ["zip", "rar", "7z", "tar", "gz"].contains(extensionName) { return .archive }
+        if MIME.hasPrefix("audio/") { return .audio }
+        if MIME.hasPrefix("video/") { return .video }
+        return .other
+    }
 }
 
 private extension String {
@@ -148,6 +192,7 @@ enum MichelMailsError: LocalizedError {
     case invalidAPIResponse
     case openAI(String)
     case mail(String)
+    case index(String)
     case keychain(OSStatus)
 
     var errorDescription: String? {
@@ -160,6 +205,8 @@ enum MichelMailsError: LocalizedError {
             return "OpenAI error: \(message)"
         case .mail(let message):
             return "Mail error: \(message)"
+        case .index(let message):
+            return "Email index error: \(message)"
         case .keychain(let status):
             return "macOS Keychain returned error \(status)."
         }

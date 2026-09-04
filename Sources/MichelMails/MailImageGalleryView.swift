@@ -1,12 +1,14 @@
 import AppKit
+import QuickLookThumbnailing
 import SwiftUI
 
 struct MailImageGalleryView: View {
     let gallery: MailImageGallery
+    @ObservedObject var indexController: MailIndexController
     let onOpenEmail: (MailMessageItem) -> Void
 
     @State private var selectedIDs: Set<UUID> = []
-    @State private var statusMessage = "Select images · drag them anywhere or copy and paste"
+    @State private var statusMessage = "Select files · drag them anywhere or copy and paste"
 
     private let columns = [
         GridItem(.adaptive(minimum: 165, maximum: 240), spacing: 14)
@@ -19,6 +21,9 @@ struct MailImageGalleryView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if !indexController.progress.isFinished {
+                scanNotice
+            }
             Divider()
 
             ScrollView {
@@ -38,6 +43,20 @@ struct MailImageGalleryView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    private var scanNotice: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+            Text("Email scan not finished — results may be incomplete")
+            Spacer()
+            Text(indexController.progress.statusText)
+        }
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 18)
+        .frame(height: 30)
+        .background(Color.orange.opacity(0.08))
+    }
+
     private var header: some View {
         HStack(spacing: 12) {
             Image(systemName: "photo.stack.fill")
@@ -51,9 +70,9 @@ struct MailImageGalleryView: View {
                 )
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Images received by email")
+                Text(galleryTitle)
                     .font(.headline)
-                Text(gallery.items.count == 1 ? "1 image" : "\(gallery.items.count) images · newest first")
+                Text(gallerySubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -109,17 +128,31 @@ struct MailImageGalleryView: View {
         case 0:
             return "Save…"
         case 1:
-            return "Save Image…"
+            return "Save File…"
         default:
-            return "Save \(selectedIDs.count) Images…"
+            return "Save \(selectedIDs.count) Files…"
         }
+    }
+
+    private var galleryTitle: String {
+        let kinds = Set(gallery.items.map(\.kind))
+        if kinds == Set([.image]) { return "Email images" }
+        if kinds == Set([.pdf]) { return "Email PDFs" }
+        if kinds == Set([.document]) { return "Email documents" }
+        return "Email files"
+    }
+
+    private var gallerySubtitle: String {
+        let noun = gallery.items.count == 1 ? "file" : "files"
+        let order = gallery.query.sortOrder == .oldestFirst ? "oldest first" : "newest first"
+        return "\(gallery.items.count) \(noun) · \(order)"
     }
 
     private func imageCard(_ item: MailImageItem) -> some View {
         let selected = selectedIDs.contains(item.id)
         return VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .topTrailing) {
-                GalleryThumbnail(URL: item.cachedURL)
+                GalleryThumbnail(item: item)
                     .frame(maxWidth: .infinity)
                     .frame(height: 156)
                     .background(Color(nsColor: .controlBackgroundColor))
@@ -132,13 +165,27 @@ struct MailImageGalleryView: View {
                         .foregroundStyle(.white, Color.accentColor)
                         .padding(8)
                 }
+
+                VStack {
+                    Spacer()
+                    Text(displayDate(item.message.receivedAt))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 6))
+                        .padding(7)
+                }
             }
 
             Text(item.displayName)
-                .font(.caption)
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .multilineTextAlignment(.leading)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 8)
         }
@@ -161,17 +208,17 @@ struct MailImageGalleryView: View {
             NSItemProvider(contentsOf: item.cachedURL) ?? NSItemProvider()
         }
         .contextMenu {
-            Button("Open Image") {
+            Button("Open File") {
                 NSWorkspace.shared.open(item.cachedURL)
             }
             Button("Open in Mail") {
                 onOpenEmail(item.message)
             }
             Divider()
-            Button("Copy Image") {
+            Button("Copy File") {
                 copy([item])
             }
-            Button("Save This Image…") {
+            Button("Save This File…") {
                 saveSingle(item)
             }
         }
@@ -186,7 +233,7 @@ struct MailImageGalleryView: View {
         } else {
             selectedIDs.insert(item.id)
         }
-        statusMessage = "Drag images, copy them, or save them"
+        statusMessage = "Drag files, copy them, or save them"
     }
 
     private func copySelected() {
@@ -214,10 +261,10 @@ struct MailImageGalleryView: View {
 
         if didCopy {
             statusMessage = items.count == 1
-                ? "Image copied · paste it anywhere"
-                : "\(items.count) images copied · paste them anywhere"
+                ? "File copied · paste it anywhere"
+                : "\(items.count) files copied · paste them anywhere"
         } else {
-            statusMessage = "Could not copy the selected images."
+            statusMessage = "Could not copy the selected files."
         }
     }
 
@@ -231,7 +278,7 @@ struct MailImageGalleryView: View {
         }
 
         let panel = NSOpenPanel()
-        panel.title = "Save Selected Images"
+        panel.title = "Save Selected Files"
         panel.message = "Choose a destination folder."
         panel.prompt = "Save Here"
         panel.canChooseDirectories = true
@@ -248,16 +295,16 @@ struct MailImageGalleryView: View {
                 try FileManager.default.copyItem(at: item.cachedURL, to: destination)
                 savedURLs.append(destination)
             }
-            statusMessage = "\(savedURLs.count) images saved to \(directory.lastPathComponent)"
+            statusMessage = "\(savedURLs.count) files saved to \(directory.lastPathComponent)"
             NSWorkspace.shared.activateFileViewerSelecting(savedURLs)
         } catch {
-            statusMessage = "Could not save the selected images."
+            statusMessage = "Could not save the selected files."
         }
     }
 
     private func saveSingle(_ item: MailImageItem) {
         let panel = NSSavePanel()
-        panel.title = "Save Image"
+        panel.title = "Save File"
         panel.prompt = "Save"
         panel.nameFieldStringValue = item.displayName
 
@@ -268,10 +315,10 @@ struct MailImageGalleryView: View {
                 try FileManager.default.removeItem(at: destination)
             }
             try FileManager.default.copyItem(at: item.cachedURL, to: destination)
-            statusMessage = "Image saved: \(destination.lastPathComponent)"
+            statusMessage = "File saved: \(destination.lastPathComponent)"
             NSWorkspace.shared.activateFileViewerSelecting([destination])
         } catch {
-            statusMessage = "Could not save the image."
+            statusMessage = "Could not save the file."
         }
     }
 
@@ -294,25 +341,69 @@ struct MailImageGalleryView: View {
             index += 1
         }
     }
+
+    private func displayDate(_ date: Date?) -> String {
+        guard let date else { return "Unknown date" }
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        let days = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: date),
+            to: calendar.startOfDay(for: Date())
+        ).day ?? 0
+        if days > 1 && days < 15 { return "\(days) days ago" }
+        return date.formatted(.dateTime.month(.abbreviated).day().year())
+    }
 }
 
 private struct GalleryThumbnail: View {
-    let URL: URL
+    let item: MailImageItem
+    @State private var image: NSImage?
 
     var body: some View {
-        if let image = NSImage(contentsOf: URL) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .padding(5)
-        } else {
-            VStack(spacing: 7) {
-                Image(systemName: "photo.badge.exclamationmark")
-                    .font(.title)
-                Text("Preview unavailable")
-                    .font(.caption2)
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(5)
+            } else {
+                VStack(spacing: 7) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Preparing preview…")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
             }
-            .foregroundStyle(.secondary)
         }
+        .task(id: item.cachedURL) {
+            image = await thumbnail(for: item)
+        }
+    }
+
+    private func thumbnail(for item: MailImageItem) async -> NSImage {
+        if item.kind == .image, let image = NSImage(contentsOf: item.cachedURL) {
+            return image
+        }
+
+        let request = QLThumbnailGenerator.Request(
+            fileAt: item.cachedURL,
+            size: NSSize(width: 420, height: 320),
+            scale: NSScreen.main?.backingScaleFactor ?? 2,
+            representationTypes: .thumbnail
+        )
+        if let thumbnail = await withCheckedContinuation({ continuation in
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, _ in
+                continuation.resume(returning: representation?.nsImage)
+            }
+        }) {
+            return thumbnail
+        }
+
+        let icon = NSWorkspace.shared.icon(forFile: item.cachedURL.path)
+        icon.size = NSSize(width: 128, height: 128)
+        return icon
     }
 }

@@ -18,9 +18,11 @@ final class SearchViewModel: ObservableObject {
 
     private let interpreter = AIQueryInterpreter()
     private let mailService = MailService()
+    private let indexController: MailIndexController
     private let historyDefaultsKey = "recentSearchPrompts"
 
-    init() {
+    init(indexController: MailIndexController) {
+        self.indexController = indexController
         APIKeyDraft = KeychainStore.readAPIKey() ?? ""
         modelDraft = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-5.4-mini"
         recentPrompts = UserDefaults.standard.stringArray(forKey: historyDefaultsKey) ?? []
@@ -77,7 +79,9 @@ final class SearchViewModel: ObservableObject {
                 case .search:
                     let results = try await searchWithFuzzyFallback(parsedQuery)
                     if results.items.isEmpty {
-                        statusText = "No emails found."
+                        statusText = indexController.progress.isFinished
+                            ? "No emails found."
+                            : "No emails found in the scanned messages yet."
                     } else {
                         onResultsReady?(results)
                         statusText = results.items.count == 1
@@ -85,16 +89,17 @@ final class SearchViewModel: ObservableObject {
                             : "\(results.items.count) emails displayed."
                     }
 
-                case .showImages:
-                    statusText = "Preparing images…"
+                case .showImages, .showFiles:
+                    statusText = parsedQuery.action == .showImages ? "Preparing images…" : "Preparing files…"
                     let gallery = try await galleryWithFuzzyFallback(parsedQuery)
                     if gallery.items.isEmpty {
-                        statusText = "No images found."
+                        statusText = parsedQuery.action == .showImages ? "No images found." : "No files found."
                     } else {
                         onGalleryReady?(gallery)
+                        let noun = parsedQuery.action == .showImages ? "image" : "file"
                         statusText = gallery.items.count == 1
-                            ? "1 image displayed."
-                            : "\(gallery.items.count) images displayed."
+                            ? "1 \(noun) displayed."
+                            : "\(gallery.items.count) \(noun)s displayed."
                     }
 
                 case .copyImages:
@@ -185,7 +190,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     private func searchWithFuzzyFallback(_ query: MailQuery) async throws -> MailSearchResults {
-        let exactResults = try await mailService.searchMessages(query)
+        let exactResults = try await searchMessages(query)
         guard exactResults.items.isEmpty, query.needsSenderResolution else { return exactResults }
 
         statusText = "Looking for a similar contact name…"
@@ -193,7 +198,14 @@ final class SearchViewModel: ObservableObject {
         guard resolved.sender != query.sender else { return exactResults }
 
         statusText = "Likely contact: \(resolved.sender ?? query.sender ?? "") · searching again…"
-        return try await mailService.searchMessages(resolved)
+        return try await searchMessages(resolved)
+    }
+
+    private func searchMessages(_ query: MailQuery) async throws -> MailSearchResults {
+        if let indexedResults = try await indexController.searchMessages(query) {
+            return indexedResults
+        }
+        return try await mailService.searchMessages(query)
     }
 
     private func imageSummaryWithFuzzyFallback(
@@ -213,7 +225,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     private func galleryWithFuzzyFallback(_ query: MailQuery) async throws -> MailImageGallery {
-        let exactGallery = try await mailService.galleryImages(query)
+        let exactGallery = try await gallery(for: query)
         guard exactGallery.items.isEmpty, query.needsSenderResolution else {
             return exactGallery
         }
@@ -223,7 +235,14 @@ final class SearchViewModel: ObservableObject {
         guard resolved.sender != query.sender else { return exactGallery }
 
         statusText = "Likely contact: \(resolved.sender ?? query.sender ?? "") · searching again…"
-        return try await mailService.galleryImages(resolved)
+        return try await gallery(for: resolved)
+    }
+
+    private func gallery(for query: MailQuery) async throws -> MailImageGallery {
+        if query.action == .showFiles {
+            return try await mailService.galleryFiles(query)
+        }
+        return try await mailService.galleryImages(query)
     }
 
     private func destinationURL(for query: MailQuery) -> URL? {

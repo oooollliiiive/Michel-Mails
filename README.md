@@ -21,14 +21,19 @@ Le MVP comprend :
 - une barre flottante SwiftUI, déplaçable, dont la position est mémorisée ;
 - une vraie présence dans le Dock, avec une icône dédiée et réouverture de la barre au clic ;
 - une interprétation bilingue français–anglais via l’API OpenAI Responses ;
-- un schéma de sortie strict pour convertir le prompt en filtres fiables ;
+- un schéma de sortie strict pour convertir le sens du prompt en filtres et en ordre de tri fiables, sans coder chaque formulation en dur ;
 - un mode local de secours ;
 - la correction approximative des noms grâce aux Contacts et à la similarité orthographique ;
-- la recherche dans l’index natif de Mail, puis une liste limitée et triée affichée directement dans Michel Mails ;
-- la détection des images jointes en excluant les petits logos et éléments de signature ;
-- une galerie native des images reçues, triées des plus récentes aux plus anciennes ;
-- le glisser-déposer des images vers le Finder ou une autre application ;
-- le copier-coller, l’enregistrement d’une ou plusieurs images et l’ouverture de leur email d’origine ;
+- un index SQLite local et progressif du texte intégral, des correspondants, des dates, des tailles exactes et des pièces jointes ;
+- une recherche utilisable pendant l’indexation, accompagnée de l’avertissement `Email scan not finished — results may be incomplete` ;
+- un scan résilient qui ignore un email illisible et poursuit immédiatement le travail ;
+- un compteur persistant du type `2,345 / 32,463 emails scanned` et une surveillance des nouveaux emails tant que l’application reste ouverte ;
+- une liste compacte de résultats affichée directement dans Michel Mails, avec ouverture individuelle dans Mail ;
+- la détection des images jointes en excluant les petits logos, les bannières et les éléments de signature ;
+- une grille universelle inspirée de Michel OS pour les images, PDF, documents, tableurs, présentations, archives, fichiers audio et vidéo ;
+- des vignettes Quick Look — notamment la première page des PDF — avec le nom et la date du fichier ;
+- le glisser-déposer des fichiers vers le Finder ou une autre application ;
+- le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
 - une confirmation avant de copier des images dans un dossier ;
 - le stockage local de la clé API dans un fichier privé accessible uniquement à l’utilisateur ;
 - la migration automatique de l’ancienne entrée du trousseau afin d’éviter une demande de mot de passe après chaque compilation locale.
@@ -75,6 +80,8 @@ L’autorisation d’accessibilité sert uniquement à placer la requête interp
 Trouve les derniers emails de Raffi qui ont une photo
 Show me the five latest emails from Sarah about the trip
 Montre-moi les 10 dernières images reçues par email
+Montre-moi les derniers PDF reçus par email
+10 plus vieux emails de Michel
 Copie toutes les images des emails de Raffi dans un dossier toto
 ```
 

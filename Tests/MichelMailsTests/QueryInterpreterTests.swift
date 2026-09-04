@@ -107,7 +107,7 @@ func imageRecordParsing() throws {
     try Data().write(to: directory.appendingPathComponent(fileName))
     let unit = "\u{1f}"
     let output = [
-        fileName, "photo.jpg", "message-7", "707", "Raffi", "Holiday", "A photo from the trip",
+        fileName, "photo.jpg", "image/jpeg", "message-7", "707", "Raffi", "Holiday", "A photo from the trip",
         "2026-09-04T08:15:00"
     ].joined(separator: unit)
 
@@ -115,6 +115,136 @@ func imageRecordParsing() throws {
 
     #expect(items.count == 1)
     #expect(items[0].displayName == "photo.jpg")
+    #expect(items[0].kind == .image)
     #expect(items[0].message.reference.messageIdentifier == "message-7")
     #expect(items[0].message.subject == "Holiday")
+}
+
+@Test("An oldest-email request becomes a semantic sort, not a keyword")
+func oldestEmailsFromSenderPrompt() {
+    let query = LocalQueryInterpreter().interpret("10 plus vieux emails de Michel")
+
+    #expect(query.action == .search)
+    #expect(query.sender == "Michel")
+    #expect(query.limit == 10)
+    #expect(query.sortOrder == .oldestFirst)
+    #expect(query.keywords.isEmpty)
+}
+
+@Test("A PDF request opens the universal file grid")
+func PDFGalleryPrompt() {
+    let query = LocalQueryInterpreter().interpret("Montre-moi les 12 derniers PDF reçus par email")
+
+    #expect(query.action == .showFiles)
+    #expect(query.direction == .received)
+    #expect(query.limit == 12)
+    #expect(query.attachmentKinds == [.pdf])
+    #expect(query.keywords.isEmpty)
+}
+
+@Test("Progressive scan records keep full text and attachment bytes")
+func scanRecordParsing() {
+    let unit = "\u{1f}"
+    let record = "\u{1e}"
+    let attachment = "\u{1d}"
+    let attachmentField = "\u{1c}"
+    let firstAttachment = ["a1", "invoice.pdf", "application/pdf", "2300000", "false", "false", "true"]
+        .joined(separator: attachmentField)
+    let secondAttachment = ["a2", "cat.jpg", "image/jpeg", "640000", "true", "true", "true"]
+        .joined(separator: attachmentField)
+    let message = [
+        "M", "message-9", "909", "Michel", "me@example.com", "Files",
+        "Every word of the complete email body remains searchable", "3123456",
+        "2026-09-04T10:11:12", "Inbox", "Google", "false",
+        firstAttachment + attachment + secondAttachment
+    ].joined(separator: unit)
+    let header = ["H", "2", "18", "false", "1", "0"].joined(separator: unit)
+
+    let batch = MailScanRecordParser.parse(header + record + message)
+
+    #expect(batch?.messages.count == 1)
+    #expect(batch?.messages[0].body.contains("complete email body") == true)
+    #expect(batch?.messages[0].sizeBytes == 3_123_456)
+    #expect(batch?.messages[0].attachments[0].sizeBytes == 2_300_000)
+    #expect(batch?.messages[0].attachments[1].isUsefulImage == true)
+}
+
+@Test("The partial local index searches words, file kinds, and oldest order")
+func partialLocalIndexSearch() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let database = try MailIndexDatabase(databaseURL: directory.appendingPathComponent("test.sqlite"))
+    let oldDate = Date(timeIntervalSince1970: 1_700_000_000)
+    let newDate = Date(timeIntervalSince1970: 1_750_000_000)
+    let PDF = IndexedMailAttachment(
+        identifier: "pdf-1",
+        name: "invoice.pdf",
+        MIMEType: "application/pdf",
+        sizeBytes: 2_400_000,
+        isImage: false,
+        isUsefulImage: false,
+        isDownloaded: true
+    )
+    let messages = [
+        IndexedMailMessage(
+            messageIdentifier: "old-message",
+            localIdentifier: "1",
+            sender: "Michel Gondry <michel@example.com>",
+            recipients: "me@example.com",
+            subject: "Old invoice",
+            body: "The complete invoice archive is attached.",
+            receivedAt: oldDate,
+            sizeBytes: 2_600_000,
+            mailboxName: "Inbox",
+            accountName: "Google",
+            isSent: false,
+            attachments: [PDF]
+        ),
+        IndexedMailMessage(
+            messageIdentifier: "new-message",
+            localIdentifier: "2",
+            sender: "Michel Gondry <michel@example.com>",
+            recipients: "me@example.com",
+            subject: "New photograph",
+            body: "A photograph from the summer trip.",
+            receivedAt: newDate,
+            sizeBytes: 800_000,
+            mailboxName: "Inbox",
+            accountName: "Google",
+            isSent: false,
+            attachments: []
+        )
+    ]
+    _ = try await database.save(
+        MailScanBatch(
+            messages: messages,
+            nextCursor: MailScanCursor(mailboxIndex: 1, messageIndex: 3),
+            attemptedCount: 2,
+            failureCount: 0,
+            isFinished: false
+        ),
+        total: 20,
+        previous: MailScanProgress(scanned: 0, total: 20, failures: 0, isFinished: false)
+    )
+
+    var query = MailQuery(
+        direction: .received,
+        sender: "Michel",
+        keywords: ["invoice"],
+        hasAttachment: true,
+        limit: 10,
+        attachmentKinds: [.pdf],
+        sortOrder: .oldestFirst
+    )
+    let PDFResults = try await database.searchMessages(query)
+    #expect(PDFResults.items.map(\.reference.messageIdentifier) == ["old-message"])
+
+    query.keywords = []
+    query.hasAttachment = false
+    query.attachmentKinds = []
+    let orderedResults = try await database.searchMessages(query)
+    #expect(orderedResults.items.map(\.reference.messageIdentifier) == ["old-message", "new-message"])
 }
