@@ -10,14 +10,18 @@ final class SearchViewModel: ObservableObject {
     @Published var showSettings = false
     @Published var APIKeyDraft = ""
     @Published var modelDraft: String
+    @Published var historyIsVisible = false
+    @Published private(set) var recentPrompts: [String] = []
     var onGalleryReady: ((MailImageGallery) -> Void)?
 
     private let interpreter = AIQueryInterpreter()
     private let mailService = MailService()
+    private let historyDefaultsKey = "recentSearchPrompts"
 
     init() {
         APIKeyDraft = KeychainStore.readAPIKey() ?? ""
         modelDraft = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-5.4-mini"
+        recentPrompts = UserDefaults.standard.stringArray(forKey: historyDefaultsKey) ?? []
         if APIKeyDraft.isEmpty {
             statusText = "Local mode · add an OpenAI key in Settings to enable AI."
             showSettings = true
@@ -28,10 +32,31 @@ final class SearchViewModel: ObservableObject {
         !APIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var historySuggestions: [String] {
+        SearchHistory.suggestions(for: prompt, in: recentPrompts)
+    }
+
+    func updatePrompt(_ value: String) {
+        prompt = value
+        historyIsVisible = !isWorking && !historySuggestions.isEmpty
+    }
+
+    func clearPrompt() {
+        prompt = ""
+        historyIsVisible = false
+    }
+
+    func chooseHistory(_ request: String) {
+        prompt = request
+        historyIsVisible = false
+    }
+
     func submit() {
         let requestText = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requestText.isEmpty, !isWorking else { return }
 
+        recordInHistory(requestText)
+        historyIsVisible = false
         pendingCopy = nil
         isWorking = true
         statusText = usesOpenAI ? "Understanding your request…" : "Understanding your request locally…"
@@ -210,6 +235,11 @@ final class SearchViewModel: ObservableObject {
 
     private func userFacingMessage(for error: Error) -> String {
         (error as? MichelMailsError)?.errorDescription ?? "Something went wrong."
+    }
+
+    private func recordInHistory(_ request: String) {
+        recentPrompts = SearchHistory.adding(request, to: recentPrompts)
+        UserDefaults.standard.set(recentPrompts, forKey: historyDefaultsKey)
     }
 }
 

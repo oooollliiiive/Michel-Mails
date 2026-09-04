@@ -124,7 +124,12 @@ final class MailService {
             throw MichelMailsError.mail("Could not control Mail’s search field.")
         }
 
-        postCommandKey(3, source: source, processIdentifier: MailApplication.processIdentifier)
+        postShortcut(
+            3,
+            flags: [.maskCommand, .maskAlternate],
+            source: source,
+            processIdentifier: MailApplication.processIdentifier
+        )
         try await Task.sleep(nanoseconds: 250_000_000)
         postCommandKey(0, source: source, processIdentifier: MailApplication.processIdentifier)
         postText(nativeSearchText(for: query), source: source, processIdentifier: MailApplication.processIdentifier)
@@ -218,10 +223,24 @@ final class MailService {
         source: CGEventSource,
         processIdentifier: pid_t
     ) {
+        postShortcut(
+            keyCode,
+            flags: .maskCommand,
+            source: source,
+            processIdentifier: processIdentifier
+        )
+    }
+
+    private func postShortcut(
+        _ keyCode: CGKeyCode,
+        flags: CGEventFlags,
+        source: CGEventSource,
+        processIdentifier: pid_t
+    ) {
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
-        keyDown?.flags = .maskCommand
-        keyUp?.flags = .maskCommand
+        keyDown?.flags = flags
+        keyUp?.flags = flags
         keyDown?.postToPid(processIdentifier)
         keyUp?.postToPid(processIdentifier)
     }

@@ -62,3 +62,15 @@ func latestEmailsFromSenderPrompt() {
     #expect(query.limit == 10)
     #expect(query.keywords.isEmpty)
 }
+
+@Test("Search history keeps recent unique requests and filters suggestions")
+func searchHistorySuggestions() {
+    var entries: [String] = []
+    entries = SearchHistory.adding("10 derniers emails de Michel", to: entries)
+    entries = SearchHistory.adding("Show me recent photos", to: entries)
+    entries = SearchHistory.adding("10 derniers emails de Michel", to: entries)
+
+    #expect(entries == ["10 derniers emails de Michel", "Show me recent photos"])
+    #expect(SearchHistory.suggestions(for: "michel", in: entries) == ["10 derniers emails de Michel"])
+    #expect(SearchHistory.suggestions(for: "PHOTOS", in: entries) == ["Show me recent photos"])
+}

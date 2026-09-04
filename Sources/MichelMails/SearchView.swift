@@ -19,13 +19,30 @@ struct SearchView: View {
 
                 TextField(
                     "e.g. Show me the 10 latest images received by email",
-                    text: $viewModel.prompt
+                    text: promptBinding
                 )
                 .textFieldStyle(.plain)
                 .font(.system(size: 18, weight: .medium))
                 .focused($promptIsFocused)
                 .onSubmit(viewModel.submit)
                 .disabled(viewModel.isWorking)
+                .popover(isPresented: $viewModel.historyIsVisible, arrowEdge: .top) {
+                    historyPopover
+                }
+
+                if !viewModel.prompt.isEmpty {
+                    Button {
+                        viewModel.clearPrompt()
+                        promptIsFocused = true
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isWorking)
+                    .help("Clear")
+                }
 
                 if viewModel.isWorking {
                     ProgressView()
@@ -116,6 +133,44 @@ struct SearchView: View {
     private var statusColor: Color {
         statusSymbol == "exclamationmark.circle" ? .orange : .secondary
     }
+
+    private var promptBinding: Binding<String> {
+        Binding(
+            get: { viewModel.prompt },
+            set: viewModel.updatePrompt
+        )
+    }
+
+    private var historyPopover: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Recent searches")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.top, 7)
+
+            ForEach(viewModel.historySuggestions, id: \.self) { request in
+                Button {
+                    viewModel.chooseHistory(request)
+                    promptIsFocused = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .foregroundStyle(.secondary)
+                        Text(request)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.bottom, 6)
+        .frame(width: 460)
+    }
 }
 
 private struct SettingsView: View {
@@ -128,7 +183,7 @@ private struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Artificial Intelligence")
                         .font(.title2.weight(.semibold))
-                    Text("Your key is stored in this Mac’s Keychain.")
+                    Text("Your key is stored privately on this Mac.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

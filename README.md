@@ -29,7 +29,8 @@ Le MVP comprend :
 - une galerie native des images reçues, triées des plus récentes aux plus anciennes ;
 - la sélection d’une ou plusieurs images et leur enregistrement à l’endroit choisi ;
 - une confirmation avant de copier des images dans un dossier ;
-- le stockage de la clé API dans le trousseau macOS.
+- le stockage local de la clé API dans un fichier privé accessible uniquement à l’utilisateur ;
+- la migration automatique de l’ancienne entrée du trousseau afin d’éviter une demande de mot de passe après chaque compilation locale.
 
 Le prompt et la date courante peuvent être envoyés à OpenAI pour être interprétés. Le contenu des emails et les pièces jointes restent sur le Mac.
 
