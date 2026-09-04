@@ -26,6 +26,8 @@ Le MVP comprend :
 - la correction approximative des noms grâce aux Contacts et à la similarité orthographique ;
 - la recherche dans l’index natif de Mail, puis la sélection des vrais messages dans Mail ;
 - la détection des images jointes en excluant les petits logos et éléments de signature ;
+- une galerie native des images reçues, triées des plus récentes aux plus anciennes ;
+- la sélection d’une ou plusieurs images et leur enregistrement à l’endroit choisi ;
 - une confirmation avant de copier des images dans un dossier ;
 - le stockage de la clé API dans le trousseau macOS.
 
@@ -65,6 +67,7 @@ L’autorisation d’accessibilité sert uniquement à placer la requête interp
 ```text
 Trouve les derniers emails de Raffi qui ont une photo
 Show me the five latest emails from Sarah about the trip
+Montre-moi les 10 dernières images reçues par email
 Copie toutes les images des emails de Raffi dans un dossier toto
 ```
 

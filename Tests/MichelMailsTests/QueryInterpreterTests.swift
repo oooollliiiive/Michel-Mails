@@ -38,3 +38,17 @@ func fuzzySenderResolution() {
     let resolved = SenderResolver().resolve("raffo", among: senders)
     #expect(resolved == "Raffi Cohen <raffi@example.com>")
 }
+
+@Test("A request for recent received images opens the gallery")
+func receivedImagesGalleryPrompt() {
+    let query = LocalQueryInterpreter().interpret(
+        "montre moi les 10 dernières images reçues par emails"
+    )
+
+    #expect(query.action == .showImages)
+    #expect(query.direction == .received)
+    #expect(query.limit == 10)
+    #expect(query.hasImage)
+    #expect(query.sender == nil)
+    #expect(query.keywords.isEmpty)
+}

@@ -9,11 +9,15 @@ final class PromptPanel: NSPanel {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: PromptPanel?
+    private var galleryWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private let viewModel = SearchViewModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        viewModel.onGalleryReady = { [weak self] gallery in
+            self?.showGallery(gallery)
+        }
         configureStatusItem()
         showPrompt()
     }
@@ -37,6 +41,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    private func showGallery(_ gallery: MailImageGallery) {
+        let window: NSWindow
+        if let galleryWindow {
+            window = galleryWindow
+        } else {
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 940, height: 660),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Images reçues par email"
+            window.minSize = NSSize(width: 690, height: 480)
+            window.isReleasedWhenClosed = false
+            if !window.setFrameUsingName("MichelMailsGalleryWindow") {
+                window.center()
+            }
+            window.setFrameAutosaveName("MichelMailsGalleryWindow")
+            galleryWindow = window
+        }
+
+        window.contentView = NSHostingView(rootView: MailImageGalleryView(gallery: gallery))
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func makePanel() -> PromptPanel {

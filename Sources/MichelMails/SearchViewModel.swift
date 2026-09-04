@@ -10,6 +10,7 @@ final class SearchViewModel: ObservableObject {
     @Published var showSettings = false
     @Published var APIKeyDraft = ""
     @Published var modelDraft: String
+    var onGalleryReady: ((MailImageGallery) -> Void)?
 
     private let interpreter = AIQueryInterpreter()
     private let mailService = MailService()
@@ -54,6 +55,18 @@ final class SearchViewModel: ObservableObject {
                         statusText = count == 1
                             ? "1 email ouvert dans Mail."
                             : "\(count) emails trouvés · ouverts dans Mail."
+                    }
+
+                case .showImages:
+                    statusText = "Je prépare les images…"
+                    let gallery = try await galleryWithFuzzyFallback(parsedQuery)
+                    if gallery.items.isEmpty {
+                        statusText = "Aucune image trouvée."
+                    } else {
+                        onGalleryReady?(gallery)
+                        statusText = gallery.items.count == 1
+                            ? "1 image affichée."
+                            : "\(gallery.items.count) images affichées."
                     }
 
                 case .copyImages:
@@ -157,6 +170,20 @@ final class SearchViewModel: ObservableObject {
 
         statusText = "Contact probable : \(resolved.sender ?? query.sender ?? "") · nouvelle recherche…"
         return (resolved, try await mailService.countImages(resolved))
+    }
+
+    private func galleryWithFuzzyFallback(_ query: MailQuery) async throws -> MailImageGallery {
+        let exactGallery = try await mailService.galleryImages(query)
+        guard exactGallery.items.isEmpty, query.needsSenderResolution else {
+            return exactGallery
+        }
+
+        statusText = "Je cherche une orthographe proche du contact…"
+        let resolved = try await mailService.resolvingSender(in: query)
+        guard resolved.sender != query.sender else { return exactGallery }
+
+        statusText = "Contact probable : \(resolved.sender ?? query.sender ?? "") · nouvelle recherche…"
+        return try await mailService.galleryImages(resolved)
     }
 
     private func destinationURL(for query: MailQuery) -> URL? {

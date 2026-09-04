@@ -46,6 +46,34 @@ final class MailService {
         return parseSummary(output)
     }
 
+    func galleryImages(_ query: MailQuery) async throws -> MailImageGallery {
+        var imageQuery = query
+        imageQuery.hasImage = true
+        imageQuery.hasAttachment = true
+
+        let cacheDirectory = try prepareGalleryCache()
+        try await performMailSearch(imageQuery)
+        _ = try await Self.runAppleScript(
+            Self.filterScript,
+            arguments: scriptArguments(
+                mode: "gallery_images",
+                query: imageQuery,
+                destination: cacheDirectory.path
+            )
+        )
+        NSApp.activate(ignoringOtherApps: true)
+
+        let URLs = try FileManager.default.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        let items = URLs
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            .map(MailImageItem.init(cachedURL:))
+        return MailImageGallery(items: items, query: imageQuery)
+    }
+
     func copyImages(_ query: MailQuery, to destination: URL) async throws -> MailMatchSummary {
         try await performMailSearch(query)
         let output = try await Self.runAppleScript(
@@ -148,8 +176,29 @@ final class MailService {
             query.hasAttachment ? "true" : "false",
             query.hasImage ? "true" : "false",
             String(effectiveLimit),
-            destination
+            destination,
+            query.direction.rawValue
         ]
+    }
+
+    private func prepareGalleryCache() throws -> URL {
+        let cacheRoot = try FileManager.default.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent("com.michelos.michelmails", isDirectory: true)
+        .appendingPathComponent("Gallery", isDirectory: true)
+
+        if FileManager.default.fileExists(atPath: cacheRoot.path) {
+            try FileManager.default.removeItem(at: cacheRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: cacheRoot,
+            withIntermediateDirectories: true
+        )
+        return cacheRoot
     }
 
     private func parseSummary(_ output: String) -> MailMatchSummary {
@@ -266,6 +315,7 @@ final class MailService {
         set needsImage to (item 5 of argv) is "true"
         set maximumResults to (item 6 of argv) as integer
         set destinationFolder to item 7 of argv
+        set directionMode to item 8 of argv
 
         if startAge < 0 then
             set startCutoff to missing value
@@ -286,10 +336,20 @@ final class MailService {
         tell application "Mail"
             if (count of message viewers) is 0 then return "0|0"
             set targetViewer to message viewer 1
+            set originalSortColumn to missing value
+            set originalSortAscending to missing value
+            if operationMode is "gallery_images" then
+                try
+                    set originalSortColumn to sort column of targetViewer
+                    set originalSortAscending to sorted ascending of targetViewer
+                    set sort column of targetViewer to date received column
+                    set sorted ascending of targetViewer to false
+                end try
+            end if
             set candidates to visible messages of targetViewer
 
             repeat with aMessage in candidates
-                if my messageMatches(aMessage, startCutoff, endCutoff, needsAttachment, needsImage) then
+                if my messageMatches(aMessage, startCutoff, endCutoff, needsAttachment, needsImage, directionMode) then
                     set matchedCount to matchedCount + 1
                     set usefulImages to my usefulImageAttachments(aMessage)
                     set imageCount to imageCount + (count of usefulImages)
@@ -310,9 +370,30 @@ final class MailService {
                                 set copiedCount to copiedCount - 1
                             end try
                         end repeat
+                    else if operationMode is "gallery_images" then
+                        repeat with anAttachment in usefulImages
+                            if copiedCount ≥ maximumResults then exit repeat
+                            try
+                                set copiedCount to copiedCount + 1
+                                set safeSubject to my safeFileName(subject of aMessage)
+                                set safeAttachmentName to my safeFileName(name of anAttachment)
+                                set targetName to my paddedNumber(copiedCount) & "-" & safeSubject & "-" & safeAttachmentName
+                                save anAttachment in POSIX file (destinationFolder & "/" & targetName)
+                            on error
+                                set copiedCount to copiedCount - 1
+                            end try
+                        end repeat
                     end if
                 end if
+                if operationMode is "gallery_images" and copiedCount ≥ maximumResults then exit repeat
             end repeat
+
+            if operationMode is "gallery_images" and originalSortColumn is not missing value then
+                try
+                    set sort column of targetViewer to originalSortColumn
+                    set sorted ascending of targetViewer to originalSortAscending
+                end try
+            end if
 
             if operationMode is "open" and (count of matchingMessages) > 0 then
                 set selected messages of targetViewer to matchingMessages
@@ -320,18 +401,20 @@ final class MailService {
             end if
         end tell
 
-        if operationMode is "copy_images" then
+        if operationMode is "copy_images" or operationMode is "gallery_images" then
             return matchedCount & "|" & copiedCount
         end if
         return matchedCount & "|" & imageCount
     end run
 
-    on messageMatches(aMessage, startCutoff, endCutoff, needsAttachment, needsImage)
+    on messageMatches(aMessage, startCutoff, endCutoff, needsAttachment, needsImage, directionMode)
         tell application "Mail"
             try
                 set receivedAt to date received of aMessage
                 if startCutoff is not missing value and receivedAt < startCutoff then return false
                 if endCutoff is not missing value and receivedAt ≥ endCutoff then return false
+                if directionMode is "received" and my messageLooksSent(aMessage) then return false
+                if directionMode is "sent" and not my messageLooksSent(aMessage) then return false
 
                 set attachmentList to every mail attachment of aMessage
                 if needsAttachment and (count of attachmentList) is 0 then return false
@@ -342,6 +425,31 @@ final class MailService {
             end try
         end tell
     end messageMatches
+
+    on messageLooksSent(aMessage)
+        tell application "Mail"
+            try
+                set senderText to sender of aMessage as text
+                repeat with anAccount in every account
+                    try
+                        repeat with accountAddress in email addresses of anAccount
+                            ignoring case
+                                if senderText contains (accountAddress as text) then return true
+                            end ignoring
+                        end repeat
+                    end try
+                end repeat
+            end try
+
+            try
+                set mailboxName to name of mailbox of aMessage as text
+                ignoring case
+                    if mailboxName contains "sent" or mailboxName contains "envoy" or mailboxName contains "gesendet" or mailboxName contains "inviati" or mailboxName contains "enviados" then return true
+                end ignoring
+            end try
+        end tell
+        return false
+    end messageLooksSent
 
     on usefulImageAttachments(aMessage)
         set imageAttachments to {}

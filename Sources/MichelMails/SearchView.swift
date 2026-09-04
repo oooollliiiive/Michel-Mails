@@ -18,7 +18,7 @@ struct SearchView: View {
                     )
 
                 TextField(
-                    "Ex. Trouve les derniers emails de Raffi avec une photo",
+                    "Ex. Montre-moi les 10 dernières images reçues par email",
                     text: $viewModel.prompt
                 )
                 .textFieldStyle(.plain)

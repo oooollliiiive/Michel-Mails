@@ -10,11 +10,20 @@ struct LocalQueryInterpreter {
 
         var query = MailQuery()
         query.language = detectLanguage(normalized)
-        query.action = containsAny(normalized, ["copie", "copier", "enregistre", "sauvegarde", "copy", "save", "export"])
-            ? .copyImages
-            : .search
         query.hasImage = containsAny(normalized, ["photo", "photos", "image", "images", "picture", "pictures", "jpg", "jpeg", "png", "heic"])
         query.hasAttachment = query.hasImage || containsAny(normalized, ["piece jointe", "pieces jointes", "attachment", "attachments", "pdf"])
+        if containsAny(normalized, ["copie", "copier", "enregistre", "sauvegarde", "copy", "save", "export"]) {
+            query.action = .copyImages
+        } else if requestsImageGallery(normalized) {
+            query.action = .showImages
+        } else {
+            query.action = .search
+        }
+        if containsAny(normalized, ["recu", "recue", "recus", "recues", "received", "incoming"]) {
+            query.direction = .received
+        } else if containsAny(normalized, ["que j ai envoye", "que jai envoye", "i sent", "mes emails envoyes"]) {
+            query.direction = .sent
+        }
         query.sender = extractSender(from: prompt)
         query.destinationFolder = extractDestination(from: prompt)
         query.limit = extractLimit(from: normalized) ?? 25
@@ -47,6 +56,21 @@ struct LocalQueryInterpreter {
         values.contains { text.contains($0) }
     }
 
+    private func requestsImageGallery(_ text: String) -> Bool {
+        guard containsAny(text, ["montre", "affiche", "voir", "show", "display"]),
+              let imageRange = text.range(of: #"\b(?:images?|photos?|pictures?)\b"#, options: .regularExpression) else {
+            return false
+        }
+
+        guard let emailRange = text.range(
+            of: #"\b(?:emails?|mails?|courriels?)\b"#,
+            options: .regularExpression
+        ) else {
+            return true
+        }
+        return imageRange.lowerBound < emailRange.lowerBound
+    }
+
     private func detectLanguage(_ text: String) -> String {
         let french = ["trouve", "mail", "courriel", "de", "avec", "dernier", "copie", "dossier"]
         let english = ["find", "email", "from", "with", "last", "copy", "folder"]
@@ -67,7 +91,11 @@ struct LocalQueryInterpreter {
                   let match = regex.firstMatch(in: prompt, range: NSRange(prompt.startIndex..., in: prompt)),
                   let range = Range(match.range(at: 1), in: prompt) else { continue }
             let value = String(prompt[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty { return value }
+            let normalizedValue = value
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                .lowercased()
+            let genericValues = Set(["email", "emails", "mail", "mails", "courriel", "courriels"])
+            if !value.isEmpty && !genericValues.contains(normalizedValue) { return value }
         }
         return nil
     }
@@ -91,10 +119,12 @@ struct LocalQueryInterpreter {
     private func extractKeywords(from text: String, sender: String?) -> [String] {
         let stopWords = Set([
             "trouve", "retrouve", "cherche", "find", "show", "me", "moi", "les", "des", "un", "une",
+            "montre", "montrer", "affiche", "afficher", "display", "voir",
             "emails", "email", "mails", "mail", "courriels", "courriel", "de", "du", "from", "par", "by",
             "dernier", "derniers", "derniere", "dernieres", "latest", "last", "avec", "with", "qui", "ont",
             "une", "photo", "photos", "image", "images", "picture", "pictures", "piece", "jointe", "attachment",
-            "copie", "copier", "copy", "dans", "dossier", "folder", "aujourd", "hui", "hier", "semaine", "mois"
+            "copie", "copier", "copy", "dans", "dossier", "folder", "aujourd", "hui", "hier", "semaine", "mois",
+            "recu", "recue", "recus", "recues", "received", "incoming"
         ])
         let senderWords = Set((sender ?? "").lowercased().split(separator: " ").map(String.init))
         return text
