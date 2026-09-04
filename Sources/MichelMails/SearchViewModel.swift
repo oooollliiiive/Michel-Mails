@@ -13,6 +13,7 @@ final class SearchViewModel: ObservableObject {
     @Published var historyIsVisible = false
     @Published private(set) var recentPrompts: [String] = []
     var onGalleryReady: ((MailImageGallery) -> Void)?
+    var onHistorySuggestionsChanged: ((Int) -> Void)?
 
     private let interpreter = AIQueryInterpreter()
     private let mailService = MailService()
@@ -38,17 +39,17 @@ final class SearchViewModel: ObservableObject {
 
     func updatePrompt(_ value: String) {
         prompt = value
-        historyIsVisible = !isWorking && !historySuggestions.isEmpty
+        updateHistoryVisibility()
     }
 
     func clearPrompt() {
         prompt = ""
-        historyIsVisible = false
+        hideHistory()
     }
 
     func chooseHistory(_ request: String) {
         prompt = request
-        historyIsVisible = false
+        hideHistory()
     }
 
     func submit() {
@@ -56,7 +57,7 @@ final class SearchViewModel: ObservableObject {
         guard !requestText.isEmpty, !isWorking else { return }
 
         recordInHistory(requestText)
-        historyIsVisible = false
+        hideHistory()
         pendingCopy = nil
         isWorking = true
         statusText = usesOpenAI ? "Understanding your request…" : "Understanding your request locally…"
@@ -240,6 +241,17 @@ final class SearchViewModel: ObservableObject {
     private func recordInHistory(_ request: String) {
         recentPrompts = SearchHistory.adding(request, to: recentPrompts)
         UserDefaults.standard.set(recentPrompts, forKey: historyDefaultsKey)
+    }
+
+    private func updateHistoryVisibility() {
+        let count = isWorking ? 0 : historySuggestions.count
+        historyIsVisible = count > 0
+        onHistorySuggestionsChanged?(count)
+    }
+
+    private func hideHistory() {
+        historyIsVisible = false
+        onHistorySuggestionsChanged?(0)
     }
 }
 

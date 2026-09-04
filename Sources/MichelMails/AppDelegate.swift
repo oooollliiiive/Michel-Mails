@@ -8,6 +8,12 @@ final class PromptPanel: NSPanel {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private static let promptWidth: CGFloat = 720
+    private static let promptBaseHeight: CGFloat = 132
+    private static let historyHeaderHeight: CGFloat = 26
+    private static let historyRowHeight: CGFloat = 34
+    private static let historySpacing: CGFloat = 12
+
     private var panel: PromptPanel?
     private var galleryWindow: NSWindow?
     private var statusItem: NSStatusItem?
@@ -17,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         viewModel.onGalleryReady = { [weak self] gallery in
             self?.showGallery(gallery)
+        }
+        viewModel.onHistorySuggestionsChanged = { [weak self] count in
+            self?.resizePromptPanel(forHistoryCount: count)
         }
         configureStatusItem()
         showPrompt()
@@ -70,7 +79,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func makePanel() -> PromptPanel {
-        let defaultFrame = NSRect(x: 0, y: 0, width: 720, height: 132)
+        let defaultFrame = NSRect(
+            x: 0,
+            y: 0,
+            width: Self.promptWidth,
+            height: Self.promptBaseHeight
+        )
         let panel = PromptPanel(
             contentRect: defaultFrame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -91,7 +105,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.hasShadow = true
         panel.delegate = self
         panel.contentMinSize = defaultFrame.size
-        panel.contentMaxSize = defaultFrame.size
+        panel.contentMaxSize = NSSize(
+            width: Self.promptWidth,
+            height: Self.promptBaseHeight
+                + Self.historySpacing
+                + Self.historyHeaderHeight
+                + (Self.historyRowHeight * 5)
+        )
         panel.standardWindowButton(.zoomButton)?.isHidden = false
         panel.standardWindowButton(.zoomButton)?.isEnabled = false
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = false
@@ -100,8 +120,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !panel.setFrameUsingName("MichelMailsPromptWindow") {
             panel.center()
         }
+        resizePromptPanel(panel, forHistoryCount: 0, animated: false)
         panel.setFrameAutosaveName("MichelMailsPromptWindow")
         return panel
+    }
+
+    private func resizePromptPanel(forHistoryCount count: Int) {
+        guard let panel else { return }
+        resizePromptPanel(panel, forHistoryCount: count, animated: true)
+    }
+
+    private func resizePromptPanel(
+        _ panel: NSPanel,
+        forHistoryCount count: Int,
+        animated: Bool
+    ) {
+        let visibleCount = min(max(count, 0), 5)
+        let historyHeight = visibleCount == 0
+            ? 0
+            : Self.historySpacing
+                + Self.historyHeaderHeight
+                + (Self.historyRowHeight * CGFloat(visibleCount))
+        let targetContentSize = NSSize(
+            width: Self.promptWidth,
+            height: Self.promptBaseHeight + historyHeight
+        )
+        let targetFrameSize = panel.frameRect(
+            forContentRect: NSRect(origin: .zero, size: targetContentSize)
+        ).size
+        let currentFrame = panel.frame
+        var targetFrame = NSRect(
+            x: currentFrame.minX,
+            y: currentFrame.maxY - targetFrameSize.height,
+            width: targetFrameSize.width,
+            height: targetFrameSize.height
+        )
+
+        if let visibleFrame = panel.screen?.visibleFrame {
+            targetFrame.origin.y = max(targetFrame.minY, visibleFrame.minY)
+        }
+        panel.setFrame(targetFrame, display: true, animate: animated)
     }
 
     private func configureStatusItem() {

@@ -26,9 +26,6 @@ struct SearchView: View {
                 .focused($promptIsFocused)
                 .onSubmit(viewModel.submit)
                 .disabled(viewModel.isWorking)
-                .popover(isPresented: $viewModel.historyIsVisible, arrowEdge: .top) {
-                    historyPopover
-                }
 
                 if !viewModel.prompt.isEmpty {
                     Button {
@@ -70,6 +67,10 @@ struct SearchView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Settings")
+            }
+
+            if viewModel.historyIsVisible {
+                historySuggestions
             }
 
             HStack(spacing: 8) {
@@ -141,13 +142,15 @@ struct SearchView: View {
         )
     }
 
-    private var historyPopover: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Recent searches")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.top, 7)
+    private var historySuggestions: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Recent searches")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .frame(height: 26)
 
             ForEach(viewModel.historySuggestions, id: \.self) { request in
                 Button {
@@ -162,14 +165,13 @@ struct SearchView: View {
                         Spacer(minLength: 4)
                     }
                     .contentShape(Rectangle())
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 34)
             }
         }
-        .padding(.bottom, 6)
-        .frame(width: 460)
+        .padding(.leading, 34)
+        .padding(.trailing, 76)
     }
 }
 
