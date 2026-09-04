@@ -12,6 +12,8 @@
     <string>6.0</string>
     <key>CFBundleName</key>
     <string>Michel Mails</string>
+    <key>CFBundleIconFile</key>
+    <string>MichelMails</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -20,8 +22,6 @@
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
-    <key>LSUIElement</key>
-    <true/>
     <key>NSAppleEventsUsageDescription</key>
     <string>Michel Mails utilise Apple Mail pour retrouver et ouvrir les messages demandés.</string>
     <key>NSContactsUsageDescription</key>

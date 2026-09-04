@@ -2,7 +2,7 @@
 
 Application macOS de recherche intelligente pour Apple Mail.
 
-Michel Mails permet de formuler des recherches en langage naturel, en français ou en anglais, avec tolérance aux fautes et aux variantes de noms. Les résultats peuvent être ouverts dans Mail. À terme, l'application pourra aussi effectuer des actions explicites et confirmées, comme copier les images trouvées dans un dossier.
+Michel Mails permet de formuler des recherches en langage naturel, en français ou en anglais, avec tolérance aux fautes et aux variantes de noms. Les résultats peuvent être ouverts dans Mail. L'application peut aussi effectuer des actions explicites et confirmées, comme copier les images trouvées dans un dossier.
 
 ## Principes du produit
 
@@ -19,6 +19,7 @@ Michel Mails permet de formuler des recherches en langage naturel, en français 
 Le MVP comprend :
 
 - une barre flottante SwiftUI, déplaçable, dont la position est mémorisée ;
+- une vraie présence dans le Dock, avec une icône dédiée et réouverture de la barre au clic ;
 - une interprétation bilingue français–anglais via l’API OpenAI Responses ;
 - un schéma de sortie strict pour convertir le prompt en filtres fiables ;
 - un mode local de secours ;

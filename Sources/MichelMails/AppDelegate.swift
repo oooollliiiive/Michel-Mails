@@ -13,9 +13,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let viewModel = SearchViewModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         configureStatusItem()
         showPrompt()
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        showPrompt()
+        return true
     }
 
     @objc private func showPrompt() {
