@@ -47,6 +47,11 @@ L’application est créée ici :
 .build/app/Michel Mails.app
 ```
 
+Cette copie est un artefact interne. La copie utilisée par Michel reste toujours
+`/Applications/Michel Mails.app` et n’est jamais lancée automatiquement après une
+compilation. La signature contient une identité désignée stable afin que macOS
+reconnaisse les versions successives comme la même application.
+
 Pour lancer les tests :
 
 ```bash

@@ -6,6 +6,7 @@ project_dir="${0:A:h:h}"
 configuration="${1:-release}"
 build_dir="$project_dir/.build"
 app_dir="$build_dir/app/Michel Mails.app"
+bundle_identifier="com.michelos.michelmails"
 
 cd "$project_dir"
 swift build -c "$configuration"
@@ -18,6 +19,7 @@ cp "$project_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 cp "$project_dir/Resources/MichelMails.icns" "$app_dir/Contents/Resources/MichelMails.icns"
 
 codesign --force --deep --sign - \
+  --requirements "=designated => identifier \"$bundle_identifier\"" \
   --entitlements "$project_dir/Resources/MichelMails.entitlements" \
   "$app_dir"
 
