@@ -14,9 +14,11 @@ struct MailImageGalleryView: View {
     @State private var transientMessage: String?
     @State private var transientMessageTask: Task<Void, Never>?
 
-    private let columns = [
-        GridItem(.adaptive(minimum: 165, maximum: 240), spacing: 14)
-    ]
+    private let cardWidth: CGFloat = 184
+    private let cardHeight: CGFloat = 156
+    private let gridSpacing: CGFloat = 8
+    private let gridPadding: CGFloat = 12
+    private let selectionControlWidth: CGFloat = 118
 
     private var selectedItems: [MailImageItem] {
         gallery.items.filter { selectedIDs.contains($0.id) }
@@ -25,6 +27,37 @@ struct MailImageGalleryView: View {
     private var lastSelectedItem: MailImageItem? {
         guard let ID = selectionOrder.last else { return nil }
         return gallery.items.first { $0.id == ID }
+    }
+
+    private var chronologicallyOrderedItems: [MailImageItem] {
+        gallery.items.enumerated().sorted { left, right in
+            let leftDate = left.element.message.receivedAt
+            let rightDate = right.element.message.receivedAt
+            switch (leftDate, rightDate) {
+            case let (.some(leftDate), .some(rightDate)) where leftDate != rightDate:
+                return gallery.query.sortOrder == .oldestFirst
+                    ? leftDate < rightDate
+                    : leftDate > rightDate
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            default:
+                return left.offset < right.offset
+            }
+        }.map(\.element)
+    }
+
+    private func galleryRows(for viewportHeight: CGFloat) -> [GridItem] {
+        let usableHeight = max(cardHeight, viewportHeight - (gridPadding * 2))
+        let rowCount = max(
+            1,
+            Int((usableHeight + gridSpacing) / (cardHeight + gridSpacing))
+        )
+        return Array(
+            repeating: GridItem(.fixed(cardHeight), spacing: gridSpacing),
+            count: rowCount
+        )
     }
 
     var body: some View {
@@ -36,13 +69,17 @@ struct MailImageGalleryView: View {
             Divider()
 
             GeometryReader { viewport in
-                ScrollView {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                        ForEach(gallery.items) { item in
+                ScrollView(.horizontal) {
+                    LazyHGrid(
+                        rows: galleryRows(for: viewport.size.height),
+                        alignment: .top,
+                        spacing: gridSpacing
+                    ) {
+                        ForEach(chronologicallyOrderedItems) { item in
                             imageCard(item)
                         }
                     }
-                    .padding(18)
+                    .padding(gridPadding)
                 }
                 .coordinateSpace(name: "MichelMailsGalleryScroll")
                 .onPreferenceChange(GalleryCardFramePreferenceKey.self) { frames in
@@ -176,24 +213,33 @@ struct MailImageGalleryView: View {
             Text(selectedIDs.count == 1 ? "1 file" : "\(selectedIDs.count) files")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(Color.accentColor)
-                .padding(.horizontal, 11)
-                .frame(height: 30)
+                .frame(width: selectionControlWidth, height: 30)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7)
                         .stroke(Color.accentColor.opacity(0.28), lineWidth: 1)
                 )
 
-            Button("Save to Desktop", action: saveSelectedToDesktop)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+            Button(action: saveSelectedToDesktop) {
+                Text("Save to Desktop")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: selectionControlWidth, height: 30)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7))
+            }
+            .buttonStyle(.plain)
 
             if selectedIDs.count == 1 {
-                Button("Open in Mail") {
+                Button {
                     if let item = lastSelectedItem { onOpenEmail(item.message) }
+                } label: {
+                    Text("Open in Mail")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: selectionControlWidth, height: 30)
+                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7))
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(.plain)
             }
         }
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
@@ -202,11 +248,13 @@ struct MailImageGalleryView: View {
     }
 
     private func selectionBarPosition(in viewportSize: CGSize) -> CGPoint {
-        let halfBarWidth: CGFloat = 180
+        let halfBarWidth: CGFloat = 190
         let barHalfHeight: CGFloat = 18
         let topY = barHalfHeight + 8
         guard let ID = selectionOrder.last,
               let frame = cardFrames[ID],
+              frame.maxX > 0,
+              frame.minX < viewportSize.width,
               frame.maxY > 0,
               frame.minY < viewportSize.height else {
             return CGPoint(x: viewportSize.width / 2, y: topY)
@@ -230,45 +278,51 @@ struct MailImageGalleryView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
                 VStack(spacing: 0) {
-                    HStack(alignment: .top, spacing: 5) {
+                    ZStack(alignment: .topTrailing) {
                         Text(item.displayName)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
                             .minimumScaleFactor(0.62)
                             .allowsTightening(true)
-                            .multilineTextAlignment(.leading)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 5)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, selected ? 29 : 7)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 25, alignment: .bottom)
+                            .padding(.bottom, 3)
                             .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
-                        Spacer(minLength: 2)
+
                         if selected {
                             Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 22, weight: .semibold))
+                                .font(.system(size: 19, weight: .semibold))
                                 .symbolRenderingMode(.palette)
                                 .foregroundStyle(.white, Color.accentColor)
+                                .padding(4)
                         }
                     }
-                    .padding(7)
+                    .padding(.horizontal, 7)
+                    .padding(.top, 10)
 
                     Spacer()
 
                     VStack(alignment: .center, spacing: 1) {
                         Text("Sent by \(item.message.sender)")
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 9.5, weight: .semibold))
                         Text(displayDate(item.message.receivedAt))
-                            .font(.system(size: 10.5, weight: .medium))
+                            .font(.system(size: 9.5, weight: .medium))
                     }
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.horizontal, 7)
-                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, minHeight: 30, alignment: .top)
+                    .padding(.top, 3)
                     .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 6))
-                    .padding(7)
+                    .padding(.horizontal, 7)
+                    .padding(.bottom, 10)
                 }
             }
         }
+        .frame(width: cardWidth, height: cardHeight)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(selected ? Color.accentColor.opacity(0.08) : Color(nsColor: .controlBackgroundColor))
