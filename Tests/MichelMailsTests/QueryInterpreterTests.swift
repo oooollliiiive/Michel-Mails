@@ -310,6 +310,20 @@ func latestImageShortcutSearch() async throws {
     }
     let messages = [
         IndexedMailMessage(
+            messageIdentifier: "junk",
+            localIdentifier: "4",
+            sender: "Junk Sender <junk@example.com>",
+            recipients: "Michel <michel@example.com>",
+            subject: "Junk album",
+            body: "",
+            receivedAt: Date(timeIntervalSince1970: 400),
+            sizeBytes: 4_000_000,
+            mailboxName: "Junk",
+            accountName: "Google",
+            isSent: false,
+            attachments: images(4, prefix: "junk")
+        ),
+        IndexedMailMessage(
             messageIdentifier: "latest",
             localIdentifier: "3",
             sender: "Raffi Adlan <raffi@example.com>",
@@ -341,13 +355,13 @@ func latestImageShortcutSearch() async throws {
     _ = try await database.saveDirectMetadata(
         DirectMailScanBatch(
             messages: messages,
-            nextRowID: 3,
-            attemptedCount: 2,
+            nextRowID: 4,
+            attemptedCount: 3,
             failureCount: 0,
             isFinished: true
         ),
-        total: 2,
-        previous: MailScanProgress(total: 2, phase: .metadata)
+        total: 3,
+        previous: MailScanProgress(total: 3, phase: .metadata)
     )
 
     let boundaryResults = try await database.latestImageAttachments(
@@ -366,8 +380,15 @@ func latestImageShortcutSearch() async throws {
     #expect(sentToRaffi.count == 2)
     #expect(Set(sentToRaffi.map(\.messageIdentifier)) == ["sent"])
 
+    var regularImageQuery = MailQuery(action: .showImages, hasImage: true, hasAttachment: true)
+    regularImageQuery.attachmentKinds = [.image]
+    regularImageQuery.allResults = true
+    let regularResults = try await database.searchAttachments(regularImageQuery)
+    #expect(!regularResults.contains { $0.messageIdentifier == "junk" })
+
     let correspondents = try await database.recentImageCorrespondents(limit: 100)
     #expect(correspondents.contains("Raffi Adlan <raffi@example.com>"))
+    #expect(!correspondents.contains("Junk Sender <junk@example.com>"))
 }
 
 @Test("The partial local index searches words, file kinds, and oldest order")

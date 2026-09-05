@@ -399,6 +399,7 @@ actor MailIndexDatabase {
         }
         if query.hasImage {
             conditions.append("m.has_useful_image = 1")
+            conditions.append(Self.nonJunkMailboxCondition)
         }
         if !query.attachmentKinds.isEmpty {
             let placeholders = Array(repeating: "?", count: query.attachmentKinds.count)
@@ -504,6 +505,9 @@ actor MailIndexDatabase {
         if query.hasImage || requestedKinds == [.image] {
             conditions.append("a.is_useful_image = 1")
         }
+        if query.hasImage || requestedKinds.contains(.image) {
+            conditions.append(Self.nonJunkMailboxCondition)
+        }
 
         let searchTokens = query.keywords.flatMap(Self.searchTokens)
         if !searchTokens.isEmpty {
@@ -554,7 +558,8 @@ actor MailIndexDatabase {
         var conditions = [
             "a.kind = 'image'",
             "a.is_useful_image = 1",
-            "(a.source_path <> '' OR m.source_path <> '')"
+            "(a.source_path <> '' OR m.source_path <> '')",
+            Self.nonJunkMailboxCondition
         ]
         var bindings: [Binding] = []
 
@@ -619,6 +624,7 @@ actor MailIndexDatabase {
               AND a.kind = 'image'
               AND a.is_useful_image = 1
         )
+          AND \(Self.nonJunkMailboxCondition)
         ORDER BY m.received_at DESC, m.message_key DESC
         LIMIT ?
         """
@@ -910,6 +916,15 @@ actor MailIndexDatabase {
         if !pending.isEmpty { identities.append(pending) }
         return identities
     }
+
+    private static let nonJunkMailboxCondition = """
+    (lower(m.mailbox_name) NOT LIKE '%junk%'
+     AND lower(m.mailbox_name) NOT LIKE '%spam%'
+     AND lower(m.mailbox_name) NOT LIKE '%indésirable%'
+     AND lower(m.mailbox_name) NOT LIKE '%indesirable%'
+     AND lower(m.mailbox_name) NOT LIKE '%bulk mail%'
+     AND lower(m.mailbox_name) NOT LIKE '%unwanted%')
+    """
 
     private static func searchTokens(in value: String) -> [String] {
         value

@@ -113,28 +113,17 @@ struct MailImageGalleryView: View {
 
             Spacer()
 
-            Button(selectedIDs.count == gallery.items.count ? "Deselect All" : "Select All") {
-                if selectedIDs.count == gallery.items.count {
-                    selectedIDs.removeAll()
-                    selectionOrder.removeAll()
-                } else {
-                    selectedIDs = Set(gallery.items.map(\.id))
-                    selectionOrder = gallery.items.map(\.id)
-                }
+            Button("Select All") {
+                selectedIDs = Set(gallery.items.map(\.id))
+                selectionOrder = gallery.items.map(\.id)
             }
-            .disabled(gallery.items.isEmpty)
+            .disabled(gallery.items.isEmpty || selectedIDs.count == gallery.items.count)
 
-            Button("Copy", action: copySelected)
-                .disabled(selectedIDs.isEmpty)
-
-            Button("Open in Email") {
-                if let item = lastSelectedItem { onOpenEmail(item.message) }
+            Button("Unselect All") {
+                selectedIDs.removeAll()
+                selectionOrder.removeAll()
             }
-            .disabled(lastSelectedItem == nil)
-
-            Button(saveButtonTitle, action: saveSelected)
-                .buttonStyle(.borderedProminent)
-                .disabled(selectedIDs.isEmpty)
+            .disabled(selectedIDs.isEmpty)
 
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
@@ -167,17 +156,6 @@ struct MailImageGalleryView: View {
         .frame(height: 42)
     }
 
-    private var saveButtonTitle: String {
-        switch selectedIDs.count {
-        case 0:
-            return "Save…"
-        case 1:
-            return "Save File…"
-        default:
-            return "Save \(selectedIDs.count) Files…"
-        }
-    }
-
     private var galleryTitle: String {
         let kinds = Set(gallery.items.map(\.kind))
         if kinds == Set([.image]) { return "Email images" }
@@ -194,33 +172,31 @@ struct MailImageGalleryView: View {
     }
 
     private var selectionActionBar: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 8) {
             Text(selectedIDs.count == 1 ? "1 file" : "\(selectedIDs.count) files")
                 .font(.system(size: 12, weight: .bold))
-
-            Rectangle()
-                .fill(.white.opacity(0.42))
-                .frame(width: 1, height: 17)
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 11)
+                .frame(height: 30)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(Color.accentColor.opacity(0.28), lineWidth: 1)
+                )
 
             Button("Save to Desktop", action: saveSelectedToDesktop)
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .semibold))
+                .buttonStyle(.bordered)
+                .controlSize(.small)
 
-            Rectangle()
-                .fill(.white.opacity(0.42))
-                .frame(width: 1, height: 17)
-
-            Button("Open in Email") {
-                if let item = lastSelectedItem { onOpenEmail(item.message) }
+            if selectedIDs.count == 1 {
+                Button("Open in Mail") {
+                    if let item = lastSelectedItem { onOpenEmail(item.message) }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .semibold))
         }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 14)
-        .frame(height: 36)
-        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .shadow(color: .black.opacity(0.22), radius: 7, y: 3)
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
         .fixedSize()
         .zIndex(20)
     }
@@ -353,10 +329,6 @@ struct MailImageGalleryView: View {
         statusMessage = "Drag files, copy them, or save them"
     }
 
-    private func copySelected() {
-        copy(selectedItems)
-    }
-
     private func saveSelectedToDesktop() {
         let items = selectedItems
         guard !items.isEmpty,
@@ -436,40 +408,6 @@ struct MailImageGalleryView: View {
         }
     }
 
-    private func saveSelected() {
-        let items = selectedItems
-        guard !items.isEmpty else { return }
-
-        if items.count == 1, let item = items.first {
-            saveSingle(item)
-            return
-        }
-
-        let panel = NSOpenPanel()
-        panel.title = "Save Selected Files"
-        panel.message = "Choose a destination folder."
-        panel.prompt = "Save Here"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-
-        guard panel.runModal() == .OK, let directory = panel.url else { return }
-
-        do {
-            var savedURLs: [URL] = []
-            for item in items {
-                let destination = availableURL(in: directory, named: item.displayName)
-                try FileManager.default.copyItem(at: item.cachedURL, to: destination)
-                savedURLs.append(destination)
-            }
-            statusMessage = "\(savedURLs.count) files saved to \(directory.lastPathComponent)"
-            NSWorkspace.shared.activateFileViewerSelecting(savedURLs)
-        } catch {
-            statusMessage = "Could not save the selected files."
-        }
-    }
-
     private func saveSingle(_ item: MailImageItem) {
         let panel = NSSavePanel()
         panel.title = "Save File"
@@ -487,26 +425,6 @@ struct MailImageGalleryView: View {
             NSWorkspace.shared.activateFileViewerSelecting([destination])
         } catch {
             statusMessage = "Could not save the file."
-        }
-    }
-
-    private func availableURL(in directory: URL, named fileName: String) -> URL {
-        let proposed = directory.appendingPathComponent(fileName)
-        guard FileManager.default.fileExists(atPath: proposed.path) else { return proposed }
-
-        let source = URL(fileURLWithPath: fileName)
-        let extensionName = source.pathExtension
-        let stem = source.deletingPathExtension().lastPathComponent
-        var index = 2
-        while true {
-            let candidateName = extensionName.isEmpty
-                ? "\(stem) \(index)"
-                : "\(stem) \(index).\(extensionName)"
-            let candidate = directory.appendingPathComponent(candidateName)
-            if !FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-            index += 1
         }
     }
 
