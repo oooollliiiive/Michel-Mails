@@ -1,17 +1,19 @@
-import Darwin
+import AppKit
 import Foundation
 
 @MainActor
 final class MailIndexController: ObservableObject {
-    @Published private(set) var progress = MailScanProgress()
+    @Published private(set) var progress = MailScanProgress(phase: .metadata)
+    @Published private(set) var fullContentProgress = MailScanProgress(phase: .content)
     @Published private(set) var isAvailable = true
+    @Published private(set) var requiresFullDiskAccess = false
     @Published private(set) var forceScanEnabled = false
-    @Published private(set) var scanActivityText = "Preparing email scan…"
+    @Published private(set) var scanActivityText = "Preparing local Mail index…"
     @Published private(set) var lastScanErrorText = "No scan errors."
 
     private var scanTask: Task<Void, Never>?
     private var database: MailIndexDatabase?
-    private let source = MailScanSource()
+    private var source: DirectMailSource?
 
     func start() {
         guard scanTask == nil else { return }
@@ -23,17 +25,20 @@ final class MailIndexController: ObservableObject {
     func stop() {
         scanTask?.cancel()
         scanTask = nil
-        Task { await source.cancelCurrentBatch() }
     }
 
     func setForceScan(_ enabled: Bool) {
         forceScanEnabled = enabled
-        Task { await source.cancelCurrentBatch() }
-        if enabled {
-            if scanTask == nil {
-                isAvailable = true
-                start()
-            }
+        if scanTask == nil { start() }
+    }
+
+    func openFullDiskAccessSettings() {
+        let URLs = [
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"
+        ]
+        for value in URLs {
+            if let URL = URL(string: value), NSWorkspace.shared.open(URL) { return }
         }
     }
 
@@ -49,534 +54,120 @@ final class MailIndexController: ObservableObject {
 
     private func runScan() async {
         while !Task.isCancelled {
-            let activeDatabase: MailIndexDatabase
             do {
-                if let database {
-                    activeDatabase = database
-                } else {
-                    let reopenedDatabase = try MailIndexDatabase()
-                    database = reopenedDatabase
-                    activeDatabase = reopenedDatabase
-                }
-                isAvailable = true
-            } catch {
-                isAvailable = false
-                scanActivityText = "Reconnecting to the local email index…"
-                lastScanErrorText = Self.shortError(error)
-                try? await Task.sleep(nanoseconds: forceScanEnabled ? 250_000_000 : 2_000_000_000)
-                continue
-            }
+                let activeDatabase = try database ?? MailIndexDatabase()
+                database = activeDatabase
 
-            do {
-                // Resume from the durable cursor immediately. Recounting more
-                // than 100,000 mailbox entries can take minutes and must never
-                // block an existing scan at launch.
-                var state = try await activeDatabase.state(total: 0)
-                if state.progress.total == 0 ||
-                    (state.progress.isFinished && state.progress.phase == .content) {
-                    scanActivityText = "Counting messages in Mail…"
-                    let latestTotal = try await source.totalMessageCount(timeout: 180)
-                    state = try await activeDatabase.state(total: latestTotal)
+                let activeSource: DirectMailSource
+                if let source {
+                    activeSource = source
+                } else {
+                    scanActivityText = "Opening Apple Mail's local index…"
+                    let openedSource = try DirectMailSource()
+                    source = openedSource
+                    activeSource = openedSource
                 }
+
+                let total = try await activeSource.totalMessageCount()
+                var state = try await activeDatabase.directState(total: total)
+                progress = state.indexProgress
+                fullContentProgress = state.contentProgress
+                requiresFullDiskAccess = false
                 isAvailable = true
-                progress = state.progress
-                var isolatedMessagesRemaining = 0
 
                 while !Task.isCancelled {
-                    if progress.isFinished {
-                        if progress.phase == .metadata {
-                            state = try await activeDatabase.beginContentPass(total: progress.total)
-                            progress = state.progress
-                            scanActivityText = "Metadata scan complete · starting email text indexing…"
-                            continue
-                        }
-                        scanActivityText = "Email scan complete · watching for new mail."
-                        break
-                    }
-
-                    do {
-                        let forceScan = forceScanEnabled
-                        let phase = progress.phase
-                        let baseSettings = Self.scanSettings(for: phase, forceScan: forceScan)
-                        let isIsolatingFailure = isolatedMessagesRemaining > 0
-                        let settings = isIsolatingFailure
-                            ? Self.isolatedScanSettings(for: phase)
-                            : baseSettings
-                        scanActivityText = Self.activityText(phase: phase, cursor: state.cursor)
-                        let batch = try await source.batch(
-                            from: state.cursor,
-                            phase: phase,
-                            maximumCount: settings.maximumCount,
-                            perMessageTimeout: settings.perMessageTimeout,
-                            processTimeout: settings.processTimeout
+                    if !progress.isFinished {
+                        let limit = forceScanEnabled ? 2_000 : 500
+                        scanActivityText = "Reading the local email index…"
+                        let batch = try await activeSource.metadataBatch(
+                            after: state.indexCursorRowID,
+                            maximumCount: limit
                         )
-                        progress = try await activeDatabase.save(
+                        progress = try await activeDatabase.saveDirectMetadata(
                             batch,
-                            total: progress.total,
+                            total: total,
                             previous: progress
                         )
-                        state.cursor = batch.nextCursor
-                        if isIsolatingFailure {
-                            isolatedMessagesRemaining = max(
-                                0,
-                                isolatedMessagesRemaining - max(batch.attemptedCount, 1)
-                            )
-                        }
-                        scanActivityText = Self.progressText(
-                            phase: phase,
-                            cursor: batch.nextCursor
+                        state.indexCursorRowID = batch.nextRowID
+                        state.indexProgress = progress
+                        scanActivityText = progressLine(
+                            prefix: "Email index saved",
+                            cursor: batch.nextRowID
                         )
-                    } catch {
-                        let failedCursor = state.cursor
-                        lastScanErrorText = "Mailbox \(failedCursor.mailboxIndex), email \(failedCursor.messageIndex): \(Self.shortError(error))"
-                        if isolatedMessagesRemaining > 0 {
-                            // A broken message must never stop the queue. Advance one
-                            // position only after an isolated one-message attempt fails.
-                            let nextCursor = MailScanCursor(
-                                mailboxIndex: state.cursor.mailboxIndex,
-                                messageIndex: state.cursor.messageIndex + 1
-                            )
-                            let skipped = MailScanBatch(
-                                messages: [],
-                                nextCursor: nextCursor,
-                                attemptedCount: 1,
-                                failureCount: 1,
-                                isFinished: false,
-                                phase: progress.phase
-                            )
-                            progress = try await activeDatabase.save(
-                                skipped,
-                                total: progress.total,
-                                previous: progress
-                            )
-                            state.cursor = nextCursor
-                            isolatedMessagesRemaining = max(0, isolatedMessagesRemaining - 1)
-                            scanActivityText = "Skipped one unreadable email · continuing immediately…"
-                        } else {
-                            // A failed multi-message batch does not reveal which item
-                            // caused it. Retry that range one-by-one so readable emails
-                            // are never discarded with the bad one.
-                            let settings = Self.scanSettings(
-                                for: progress.phase,
-                                forceScan: forceScanEnabled
-                            )
-                            isolatedMessagesRemaining = settings.maximumCount
-                            scanActivityText = "A batch stalled · isolating the unreadable email…"
+                        await pause(after: .metadata)
+                        continue
+                    }
+
+                    if !fullContentProgress.isFinished {
+                        let limit = forceScanEnabled ? 50 : 10
+                        scanActivityText = "Reading locally downloaded email contents…"
+                        let batch = try await activeSource.contentBatch(
+                            after: state.contentCursorRowID,
+                            maximumCount: limit
+                        )
+                        fullContentProgress = try await activeDatabase.saveDirectContent(
+                            batch,
+                            total: total,
+                            previous: fullContentProgress
+                        )
+                        state.contentCursorRowID = batch.nextRowID
+                        state.contentProgress = fullContentProgress
+                        if batch.failureCount > 0 {
+                            lastScanErrorText = "\(batch.failureCount) local contents unavailable in the last batch; scan continued."
                         }
-                        try? await Task.sleep(nanoseconds: forceScanEnabled ? 20_000_000 : 500_000_000)
+                        scanActivityText = progressLine(
+                            prefix: "Full content saved",
+                            cursor: batch.nextRowID
+                        )
+                        await pause(after: .content)
+                        continue
                     }
 
-                    if !forceScanEnabled {
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                    }
+                    scanActivityText = "Both scans complete · watching for new mail."
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                    let latestTotal = try await activeSource.totalMessageCount()
+                    state = try await activeDatabase.directState(total: latestTotal)
+                    progress = state.indexProgress
+                    fullContentProgress = state.contentProgress
                 }
-
-                // Keep watching for newly arrived mail while Michel Mails stays open.
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
             } catch {
                 if Task.isCancelled { break }
-                // Mail can temporarily be synchronizing or unavailable. Keep the
-                // durable cursor and reconnect instead of disabling the scanner.
-                database = nil
-                isAvailable = false
-                scanActivityText = "Reconnecting to the local email index…"
-                lastScanErrorText = Self.shortError(error)
-                try? await Task.sleep(
-                    nanoseconds: forceScanEnabled ? 250_000_000 : 2_000_000_000
-                )
+                source = nil
+                let message = Self.shortError(error)
+                lastScanErrorText = message
+                if case DirectMailSourceError.fullDiskAccessRequired = error {
+                    requiresFullDiskAccess = true
+                    isAvailable = false
+                    scanActivityText = "Full Disk Access required · add Michel Mails, then reopen it if macOS asks."
+                } else {
+                    requiresFullDiskAccess = false
+                    isAvailable = false
+                    scanActivityText = "Email index temporarily unavailable · retrying automatically."
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
         scanTask = nil
     }
 
-    private static func scanSettings(
-        for phase: MailScanPhase,
-        forceScan: Bool
-    ) -> (maximumCount: Int, perMessageTimeout: Int, processTimeout: TimeInterval) {
-        switch (phase, forceScan) {
-        case (.metadata, true): return (30, 2, 10)
-        case (.metadata, false): return (8, 5, 20)
-        case (.content, true): return (5, 2, 10)
-        case (.content, false): return (2, 5, 12)
+    private func pause(after phase: MailScanPhase) async {
+        if forceScanEnabled {
+            await Task.yield()
+            return
         }
+        let nanoseconds: UInt64 = phase == .metadata ? 150_000_000 : 350_000_000
+        try? await Task.sleep(nanoseconds: nanoseconds)
     }
 
-    private static func isolatedScanSettings(
-        for phase: MailScanPhase
-    ) -> (maximumCount: Int, perMessageTimeout: Int, processTimeout: TimeInterval) {
-        phase == .metadata ? (1, 2, 3) : (1, 2, 4)
-    }
-
-    private static func activityText(phase: MailScanPhase, cursor: MailScanCursor) -> String {
-        let action = phase == .metadata ? "Scanning metadata" : "Indexing email text"
-        return "\(action) · mailbox \(cursor.mailboxIndex), email \(cursor.messageIndex)…"
-    }
-
-    private static func progressText(phase: MailScanPhase, cursor: MailScanCursor) -> String {
-        let action = phase == .metadata ? "Metadata saved" : "Email text saved"
+    private func progressLine(prefix: String, cursor: Int64) -> String {
         let time = Date.now.formatted(date: .omitted, time: .standard)
-        return "\(action) at \(time) · next: mailbox \(cursor.mailboxIndex), email \(cursor.messageIndex)"
+        return "\(prefix) at \(time) · source row \(cursor.formatted())"
     }
 
     private static func shortError(_ error: Error) -> String {
-        let text = (error as? MichelMailsError)?.errorDescription ?? error.localizedDescription
-        let singleLine = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        let singleLine = text
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
         return String(singleLine.prefix(180))
     }
-}
-
-private actor MailScanSource {
-    private var currentProcess: Process?
-
-    func cancelCurrentBatch() {
-        guard let currentProcess, currentProcess.isRunning else { return }
-        Self.forceTerminate(currentProcess)
-    }
-
-    func totalMessageCount(timeout: TimeInterval = 180) async throws -> Int {
-        let output = try await runAppleScript(
-            Self.totalCountScript,
-            arguments: [],
-            timeout: timeout
-        )
-        guard let count = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw MichelMailsError.index("Mail did not return its message count.")
-        }
-        return count
-    }
-
-    func batch(
-        from cursor: MailScanCursor,
-        phase: MailScanPhase,
-        maximumCount: Int,
-        perMessageTimeout: Int,
-        processTimeout: TimeInterval
-    ) async throws -> MailScanBatch {
-        let output = try await runAppleScript(
-            Self.batchScript,
-            arguments: [
-                String(cursor.mailboxIndex),
-                String(cursor.messageIndex),
-                String(max(maximumCount, 1)),
-                String(max(perMessageTimeout, 1)),
-                phase.rawValue
-            ],
-            timeout: processTimeout
-        )
-        guard let batch = MailScanRecordParser.parse(output) else {
-            throw MichelMailsError.index("Mail returned an unreadable scan batch.")
-        }
-        return batch
-    }
-
-    private func runAppleScript(
-        _ script: String,
-        arguments: [String],
-        timeout: TimeInterval = 30
-    ) async throws -> String {
-        let process = Process()
-        let standardOutput = Pipe()
-        let standardError = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script, "--"] + arguments
-        process.standardOutput = standardOutput
-        process.standardError = standardError
-        currentProcess = process
-        defer {
-            if currentProcess === process { currentProcess = nil }
-        }
-
-        return try await Task.detached(priority: .utility) {
-            try process.run()
-            let timeoutWorkItem = DispatchWorkItem {
-                if process.isRunning { Self.forceTerminate(process) }
-            }
-            DispatchQueue.global(qos: .utility).asyncAfter(
-                deadline: .now() + timeout,
-                execute: timeoutWorkItem
-            )
-            async let outputData = Task.detached {
-                standardOutput.fileHandleForReading.readDataToEndOfFile()
-            }.value
-            async let errorData = Task.detached {
-                standardError.fileHandleForReading.readDataToEndOfFile()
-            }.value
-            process.waitUntilExit()
-            timeoutWorkItem.cancel()
-
-            let output = String(data: await outputData, encoding: .utf8) ?? ""
-            let error = String(data: await errorData, encoding: .utf8) ?? ""
-            guard process.terminationStatus == 0 else {
-                let detail = error.trimmingCharacters(in: .whitespacesAndNewlines)
-                if detail.contains("-1743") || detail.localizedCaseInsensitiveContains("not authorized") {
-                    throw MichelMailsError.mail(
-                        "Allow Michel Mails to control Mail in System Settings › Privacy & Security › Automation."
-                    )
-                }
-                if process.terminationReason == .uncaughtSignal {
-                    throw MichelMailsError.index(
-                        "Mail did not answer within \(Int(timeout)) seconds; that email was skipped."
-                    )
-                }
-                let readableDetail = detail
-                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                if !readableDetail.isEmpty {
-                    throw MichelMailsError.index(String(readableDetail.prefix(160)))
-                }
-                throw MichelMailsError.index("Mail returned an unreadable scan batch.")
-            }
-            return output
-        }.value
-    }
-
-    private nonisolated static func forceTerminate(_ process: Process) {
-        guard process.isRunning else { return }
-        process.terminate()
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
-            if process.isRunning {
-                Darwin.kill(process.processIdentifier, SIGKILL)
-            }
-        }
-    }
-
-    private static let totalCountScript = #"""
-    tell application "Mail" to launch
-    set totalCount to 0
-    tell application "Mail"
-        repeat with anAccount in every account
-            repeat with aMailbox in every mailbox of anAccount
-                try
-                    set totalCount to totalCount + (count of every message of aMailbox)
-                end try
-            end repeat
-        end repeat
-    end tell
-    return totalCount as text
-    """#
-
-    private static let batchScript = #"""
-    on run argv
-        tell application "Mail" to launch
-        set mailboxIndex to (item 1 of argv) as integer
-        set messageIndex to (item 2 of argv) as integer
-        set maximumCount to (item 3 of argv) as integer
-        set perMessageTimeout to (item 4 of argv) as integer
-        set scanPhase to item 5 of argv as text
-        set unitSeparator to ASCII character 31
-        set recordSeparator to ASCII character 30
-        set attachmentSeparator to ASCII character 29
-        set attachmentFieldSeparator to ASCII character 28
-        set outputRows to {}
-        set attemptedCount to 0
-        set failureCount to 0
-        set finishedScan to false
-
-        set mailboxRecords to {}
-        set myAddresses to {}
-        tell application "Mail"
-            repeat with anAccount in every account
-                set accountName to ""
-                try
-                    set accountName to name of anAccount as text
-                end try
-                try
-                    repeat with accountAddress in email addresses of anAccount
-                        set end of myAddresses to accountAddress as text
-                    end repeat
-                end try
-                repeat with aMailbox in every mailbox of anAccount
-                    set end of mailboxRecords to {contents of aMailbox, accountName}
-                end repeat
-            end repeat
-        end tell
-
-        repeat while attemptedCount < maximumCount
-            if mailboxIndex > (count of mailboxRecords) then
-                set finishedScan to true
-                exit repeat
-            end if
-
-            set mailboxRecord to item mailboxIndex of mailboxRecords
-            set targetMailbox to item 1 of mailboxRecord
-            set accountName to item 2 of mailboxRecord
-            set mailboxName to ""
-            set messageCount to 0
-            tell application "Mail"
-                try
-                    set mailboxName to name of targetMailbox as text
-                    set messageCount to count of every message of targetMailbox
-                on error
-                    set failureCount to failureCount + 1
-                    set mailboxIndex to mailboxIndex + 1
-                    set messageIndex to 1
-                end try
-            end tell
-
-            if messageCount is 0 or messageIndex > messageCount then
-                set mailboxIndex to mailboxIndex + 1
-                set messageIndex to 1
-            else
-                set attemptedCount to attemptedCount + 1
-                tell application "Mail"
-                    try
-                        with timeout of perMessageTimeout seconds
-                            set aMessage to message messageIndex of targetMailbox
-                            set end of outputRows to my messageRow(aMessage, mailboxName, accountName, scanPhase, myAddresses, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
-                        end timeout
-                    on error
-                        set failureCount to failureCount + 1
-                    end try
-                end tell
-                set messageIndex to messageIndex + 1
-            end if
-        end repeat
-
-        if mailboxIndex > (count of mailboxRecords) then set finishedScan to true
-        set headerRow to "H" & unitSeparator & mailboxIndex & unitSeparator & messageIndex & unitSeparator & (finishedScan as text) & unitSeparator & attemptedCount & unitSeparator & failureCount & unitSeparator & scanPhase
-        if (count of outputRows) is 0 then return headerRow
-        return headerRow & recordSeparator & my joinRows(outputRows, recordSeparator)
-    end run
-
-    on messageRow(aMessage, mailboxName, accountName, scanPhase, myAddresses, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
-        set messageIdentifier to ""
-        set localIdentifier to ""
-        set senderText to ""
-        set recipientText to ""
-        set subjectText to ""
-        set bodyText to ""
-        set receivedText to ""
-        set sizeBytes to 0
-        set isSentMessage to false
-        set bodyWasScanned to false
-        set attachmentRows to {}
-
-        tell application "Mail"
-            try
-                set messageIdentifier to message id of aMessage as text
-            end try
-            try
-                set localIdentifier to id of aMessage as text
-            end try
-            if scanPhase is "content" then
-                set bodyText to content of aMessage as text
-                set bodyWasScanned to true
-            else
-                try
-                    set senderText to sender of aMessage as text
-                end try
-                try
-                    set recipientRows to {}
-                    repeat with aRecipient in (every to recipient of aMessage)
-                        try
-                            set end of recipientRows to address of aRecipient as text
-                        end try
-                    end repeat
-                    repeat with aRecipient in (every cc recipient of aMessage)
-                        try
-                            set end of recipientRows to address of aRecipient as text
-                        end try
-                    end repeat
-                    set recipientText to my joinRows(recipientRows, ", ")
-                end try
-                try
-                    set subjectText to subject of aMessage as text
-                end try
-                try
-                    set receivedText to my ISODateText(date received of aMessage)
-                end try
-                try
-                    set sizeBytes to message size of aMessage as integer
-                end try
-                set isSentMessage to my messageLooksSent(senderText, mailboxName, myAddresses)
-
-                try
-                    set messageAttachments to every mail attachment of aMessage
-                    repeat with anAttachment in messageAttachments
-                        set attachmentIdentifier to ""
-                        set attachmentName to ""
-                        set MIMEText to ""
-                        set attachmentSize to 0
-                        try
-                            set attachmentIdentifier to id of anAttachment as text
-                        end try
-                        try
-                            set attachmentName to name of anAttachment as text
-                        end try
-                        try
-                            set MIMEText to MIME type of anAttachment as text
-                        end try
-                        try
-                            set attachmentSize to file size of anAttachment as integer
-                        end try
-
-                        ignoring case
-                            set imageState to MIMEText starts with "image/" or attachmentName ends with ".jpg" or attachmentName ends with ".jpeg" or attachmentName ends with ".png" or attachmentName ends with ".heic" or attachmentName ends with ".gif" or attachmentName ends with ".webp"
-                            set decorationState to attachmentName contains "signature" or attachmentName contains "logo" or attachmentName contains "spacer" or attachmentName contains "tracking" or attachmentName contains "icon"
-                        end ignoring
-                        set usefulImageState to imageState and not decorationState and attachmentSize ≥ 5000
-
-                        set attachmentRow to my cleanField(attachmentIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & my cleanField(attachmentName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & my cleanField(MIMEText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & attachmentSize & attachmentFieldSeparator & (imageState as text) & attachmentFieldSeparator & (usefulImageState as text) & attachmentFieldSeparator & "false"
-                        set end of attachmentRows to attachmentRow
-                    end repeat
-                end try
-            end if
-        end tell
-
-        return "M" & unitSeparator & my cleanField(messageIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(localIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(senderText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(recipientText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(subjectText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(bodyText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & sizeBytes & unitSeparator & receivedText & unitSeparator & my cleanField(mailboxName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(accountName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & (isSentMessage as text) & unitSeparator & (bodyWasScanned as text) & unitSeparator & my joinRows(attachmentRows, attachmentSeparator)
-    end messageRow
-
-    on messageLooksSent(senderText, mailboxName, myAddresses)
-        ignoring case
-            if mailboxName contains "sent" or mailboxName contains "envoy" or mailboxName contains "gesendet" or mailboxName contains "inviati" or mailboxName contains "enviados" then return true
-        end ignoring
-        repeat with accountAddress in myAddresses
-            ignoring case
-                if senderText contains (accountAddress as text) then return true
-            end ignoring
-        end repeat
-        return false
-    end messageLooksSent
-
-    on ISODateText(aDate)
-        set yearText to year of aDate as integer as text
-        set monthText to my paddedPair(month of aDate as integer)
-        set dayText to my paddedPair(day of aDate as integer)
-        set hourText to my paddedPair(hours of aDate as integer)
-        set minuteText to my paddedPair(minutes of aDate as integer)
-        set secondText to my paddedPair(seconds of aDate as integer)
-        return yearText & "-" & monthText & "-" & dayText & "T" & hourText & ":" & minuteText & ":" & secondText
-    end ISODateText
-
-    on paddedPair(valueNumber)
-        if valueNumber < 10 then return "0" & (valueNumber as text)
-        return valueNumber as text
-    end paddedPair
-
-    on cleanField(sourceText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
-        if sourceText is missing value then return ""
-        set cleaned to sourceText as text
-        repeat with invalidCharacter in {unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator, return, linefeed, tab}
-            set cleaned to my replaceText(cleaned, contents of invalidCharacter, " ")
-        end repeat
-        return cleaned
-    end cleanField
-
-    on replaceText(sourceText, searchText, replacementText)
-        set previousDelimiters to AppleScript's text item delimiters
-        set AppleScript's text item delimiters to searchText
-        set pieces to every text item of sourceText
-        set AppleScript's text item delimiters to replacementText
-        set joined to pieces as text
-        set AppleScript's text item delimiters to previousDelimiters
-        return joined
-    end replaceText
-
-    on joinRows(rowsToJoin, rowSeparator)
-        set previousDelimiters to AppleScript's text item delimiters
-        set AppleScript's text item delimiters to rowSeparator
-        set joined to rowsToJoin as text
-        set AppleScript's text item delimiters to previousDelimiters
-        return joined
-    end joinRows
-    """#
 }

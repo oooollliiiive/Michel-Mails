@@ -54,6 +54,14 @@ actor MailIndexDatabase {
             "ALTER TABLE scan_state ADD COLUMN phase TEXT NOT NULL DEFAULT 'metadata'",
             on: connection
         )
+        try? Self.execute(
+            "ALTER TABLE messages ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
+            on: connection
+        )
+        try? Self.execute(
+            "ALTER TABLE attachments ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
+            on: connection
+        )
         try Self.execute(
             "UPDATE messages SET body_indexed = 1 WHERE body_indexed = 0 AND body <> ''",
             on: connection
@@ -194,6 +202,165 @@ actor MailIndexDatabase {
         }
     }
 
+    func directState(total latestTotal: Int) throws -> DirectMailScanState {
+        guard let statement = try prepare(
+            """
+            SELECT total, index_scanned, index_failures, index_cursor, index_finished,
+                   content_scanned, content_failures, content_cursor, content_finished
+            FROM direct_scan_state WHERE id = 1
+            """
+        ) else {
+            throw MichelMailsError.index("The direct email scan state is unavailable.")
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw MichelMailsError.index("The direct email scan state is unavailable.")
+        }
+
+        var total = Int(sqlite3_column_int64(statement, 0))
+        var indexScanned = Int(sqlite3_column_int64(statement, 1))
+        let indexFailures = Int(sqlite3_column_int64(statement, 2))
+        let indexCursor = sqlite3_column_int64(statement, 3)
+        var indexFinished = sqlite3_column_int(statement, 4) == 1
+        var contentScanned = Int(sqlite3_column_int64(statement, 5))
+        let contentFailures = Int(sqlite3_column_int64(statement, 6))
+        let contentCursor = sqlite3_column_int64(statement, 7)
+        var contentFinished = sqlite3_column_int(statement, 8) == 1
+
+        if total == 0 {
+            total = latestTotal
+            indexScanned = 0
+            contentScanned = 0
+            indexFinished = latestTotal == 0
+            contentFinished = latestTotal == 0
+            try run(
+                """
+                UPDATE direct_scan_state
+                SET total = ?, index_scanned = 0, index_failures = 0, index_cursor = 0,
+                    index_finished = ?, content_scanned = 0, content_failures = 0,
+                    content_cursor = 0, content_finished = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                bindings: [
+                    .integer(Int64(total)), .integer(indexFinished ? 1 : 0),
+                    .integer(contentFinished ? 1 : 0), .double(Date().timeIntervalSince1970)
+                ]
+            )
+        } else if latestTotal > total {
+            total = latestTotal
+            indexFinished = false
+            contentFinished = false
+            try run(
+                """
+                UPDATE direct_scan_state
+                SET total = ?, index_finished = 0, content_finished = 0, updated_at = ?
+                WHERE id = 1
+                """,
+                bindings: [.integer(Int64(total)), .double(Date().timeIntervalSince1970)]
+            )
+        } else if latestTotal > 0 && latestTotal < total {
+            total = latestTotal
+            indexScanned = min(indexScanned, total)
+            contentScanned = min(contentScanned, total)
+            try run(
+                """
+                UPDATE direct_scan_state
+                SET total = ?, index_scanned = ?, content_scanned = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                bindings: [
+                    .integer(Int64(total)), .integer(Int64(indexScanned)),
+                    .integer(Int64(contentScanned)), .double(Date().timeIntervalSince1970)
+                ]
+            )
+        }
+
+        return DirectMailScanState(
+            indexProgress: MailScanProgress(
+                scanned: indexScanned,
+                total: total,
+                failures: indexFailures,
+                isFinished: indexFinished,
+                phase: .metadata
+            ),
+            indexCursorRowID: indexCursor,
+            contentProgress: MailScanProgress(
+                scanned: contentScanned,
+                total: total,
+                failures: contentFailures,
+                isFinished: contentFinished,
+                phase: .content
+            ),
+            contentCursorRowID: contentCursor
+        )
+    }
+
+    func saveDirectMetadata(
+        _ batch: DirectMailScanBatch,
+        total: Int,
+        previous: MailScanProgress
+    ) throws -> MailScanProgress {
+        try saveDirectBatch(batch, total: total, previous: previous, phase: .metadata)
+    }
+
+    func saveDirectContent(
+        _ batch: DirectMailScanBatch,
+        total: Int,
+        previous: MailScanProgress
+    ) throws -> MailScanProgress {
+        try saveDirectBatch(batch, total: total, previous: previous, phase: .content)
+    }
+
+    private func saveDirectBatch(
+        _ batch: DirectMailScanBatch,
+        total: Int,
+        previous: MailScanProgress,
+        phase: MailScanPhase
+    ) throws -> MailScanProgress {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            var writeFailures = 0
+            for message in batch.messages {
+                try execute("SAVEPOINT direct_message_write")
+                do {
+                    try upsertMetadata(message)
+                    try execute("RELEASE direct_message_write")
+                } catch {
+                    try? execute("ROLLBACK TO direct_message_write")
+                    try? execute("RELEASE direct_message_write")
+                    writeFailures += 1
+                }
+            }
+            let scanned = min(total, previous.scanned + batch.attemptedCount)
+            let failures = previous.failures + batch.failureCount + writeFailures
+            let finished = batch.isFinished || scanned >= total
+            let prefix = phase == .metadata ? "index" : "content"
+            try run(
+                """
+                UPDATE direct_scan_state
+                SET \(prefix)_scanned = ?, \(prefix)_failures = ?, \(prefix)_cursor = ?,
+                    \(prefix)_finished = ?, updated_at = ? WHERE id = 1
+                """,
+                bindings: [
+                    .integer(Int64(scanned)), .integer(Int64(failures)),
+                    .integer(batch.nextRowID), .integer(finished ? 1 : 0),
+                    .double(Date().timeIntervalSince1970)
+                ]
+            )
+            try execute("COMMIT")
+            return MailScanProgress(
+                scanned: scanned,
+                total: total,
+                failures: failures,
+                isFinished: finished,
+                phase: phase
+            )
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
     func indexedMessageCount() throws -> Int {
         guard let statement = try prepare("SELECT COUNT(*) FROM messages") else { return 0 }
         defer { sqlite3_finalize(statement) }
@@ -296,7 +463,7 @@ actor MailIndexDatabase {
     }
 
     func searchAttachments(_ query: MailQuery) throws -> [IndexedMailAttachmentCandidate] {
-        var conditions: [String] = ["a.size_bytes > 0"]
+        var conditions: [String] = ["a.size_bytes >= 0"]
         var bindings: [Binding] = []
 
         switch query.direction {
@@ -350,7 +517,8 @@ actor MailIndexDatabase {
         let SQL = """
         SELECT m.message_identifier, m.local_identifier, m.sender, m.subject,
                substr(m.body, 1, 240), m.received_at, m.account_name, m.mailbox_name,
-               a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind
+               a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind,
+               CASE WHEN a.source_path <> '' THEN a.source_path ELSE m.source_path END
         FROM attachments a
         JOIN messages m ON m.message_key = a.message_key
         WHERE \(conditions.joined(separator: " AND "))
@@ -384,7 +552,8 @@ actor MailIndexDatabase {
                     attachmentName: Self.text(at: 9, in: statement),
                     MIMEType: Self.text(at: 10, in: statement),
                     sizeBytes: sqlite3_column_int64(statement, 11),
-                    kind: kind
+                    kind: kind,
+                    sourcePath: Self.text(at: 13, in: statement)
                 )
             )
         }
@@ -397,8 +566,8 @@ actor MailIndexDatabase {
             INSERT INTO messages (
                 message_key, message_identifier, local_identifier, sender, recipients,
                 subject, body, received_at, size_bytes, mailbox_name, account_name,
-                is_sent, has_attachment, has_useful_image, indexed_at, body_indexed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_sent, has_attachment, has_useful_image, indexed_at, body_indexed, source_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_key) DO UPDATE SET
                 message_identifier = excluded.message_identifier,
                 local_identifier = excluded.local_identifier,
@@ -414,7 +583,8 @@ actor MailIndexDatabase {
                 has_attachment = excluded.has_attachment,
                 has_useful_image = excluded.has_useful_image,
                 indexed_at = excluded.indexed_at,
-                body_indexed = MAX(messages.body_indexed, excluded.body_indexed)
+                body_indexed = MAX(messages.body_indexed, excluded.body_indexed),
+                source_path = CASE WHEN excluded.source_path <> '' THEN excluded.source_path ELSE messages.source_path END
             """,
             bindings: [
                 .text(message.key), .text(message.messageIdentifier), .text(message.localIdentifier),
@@ -423,7 +593,8 @@ actor MailIndexDatabase {
                 .integer(message.sizeBytes), .text(message.mailboxName), .text(message.accountName),
                 .integer(message.isSent ? 1 : 0), .integer(message.attachments.isEmpty ? 0 : 1),
                 .integer(message.attachments.contains(where: \.isUsefulImage) ? 1 : 0),
-                .double(Date().timeIntervalSince1970), .integer(message.bodyWasScanned ? 1 : 0)
+                .double(Date().timeIntervalSince1970), .integer(message.bodyWasScanned ? 1 : 0),
+                .text(message.sourcePath)
             ]
         )
 
@@ -436,14 +607,15 @@ actor MailIndexDatabase {
                 """
                 INSERT OR REPLACE INTO attachments (
                     attachment_key, message_key, attachment_identifier, name, mime_type,
-                    size_bytes, is_image, is_useful_image, is_downloaded, kind
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    size_bytes, is_image, is_useful_image, is_downloaded, kind, source_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 bindings: [
                     .text(attachmentKey), .text(message.key), .text(attachment.identifier),
                     .text(attachment.name), .text(attachment.MIMEType), .integer(attachment.sizeBytes),
                     .integer(attachment.isImage ? 1 : 0), .integer(attachment.isUsefulImage ? 1 : 0),
-                    .integer(attachment.isDownloaded ? 1 : 0), .text(Self.kind(of: attachment).rawValue)
+                    .integer(attachment.isDownloaded ? 1 : 0), .text(Self.kind(of: attachment).rawValue),
+                    .text(attachment.sourcePath)
                 ]
             )
         }
@@ -609,7 +781,8 @@ actor MailIndexDatabase {
         has_attachment INTEGER NOT NULL,
         has_useful_image INTEGER NOT NULL,
         indexed_at REAL NOT NULL,
-        body_indexed INTEGER NOT NULL DEFAULT 0
+        body_indexed INTEGER NOT NULL DEFAULT 0,
+        source_path TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS messages_received_at ON messages(received_at);
     CREATE INDEX IF NOT EXISTS messages_size_bytes ON messages(size_bytes);
@@ -624,7 +797,8 @@ actor MailIndexDatabase {
         is_image INTEGER NOT NULL,
         is_useful_image INTEGER NOT NULL,
         is_downloaded INTEGER NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'other'
+        kind TEXT NOT NULL DEFAULT 'other',
+        source_path TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS attachments_message_key ON attachments(message_key);
     CREATE INDEX IF NOT EXISTS attachments_size_bytes ON attachments(size_bytes);
@@ -649,5 +823,19 @@ actor MailIndexDatabase {
         phase TEXT NOT NULL DEFAULT 'metadata'
     );
     INSERT OR IGNORE INTO scan_state(id) VALUES(1);
+    CREATE TABLE IF NOT EXISTS direct_scan_state (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        total INTEGER NOT NULL DEFAULT 0,
+        index_scanned INTEGER NOT NULL DEFAULT 0,
+        index_failures INTEGER NOT NULL DEFAULT 0,
+        index_cursor INTEGER NOT NULL DEFAULT 0,
+        index_finished INTEGER NOT NULL DEFAULT 0,
+        content_scanned INTEGER NOT NULL DEFAULT 0,
+        content_failures INTEGER NOT NULL DEFAULT 0,
+        content_cursor INTEGER NOT NULL DEFAULT 0,
+        content_finished INTEGER NOT NULL DEFAULT 0,
+        updated_at REAL NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO direct_scan_state(id) VALUES(1);
     """
 }

@@ -134,31 +134,32 @@ final class MailService {
         throw MichelMailsError.mail("The original email could not be opened.")
     }
 
-    private static func extract(
+    private nonisolated static func extract(
         _ candidate: IndexedMailAttachmentCandidate,
         to destination: URL
     ) async -> Bool {
-        do {
-            let output = try await Self.runAppleScript(
-                Self.backgroundAttachmentScript,
-                arguments: [
-                    candidate.accountName,
-                    candidate.mailboxName,
-                    candidate.messageIdentifier,
-                    candidate.localIdentifier,
-                    candidate.attachmentIdentifier,
-                    candidate.attachmentName,
-                    destination.path
-                ],
-                timeout: 6
-            )
-            return output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
-                && FileManager.default.fileExists(atPath: destination.path)
-        } catch {
-            // One unavailable attachment must not prevent the remaining files
-            // from being shown or copied.
-            return false
-        }
+        await Task.detached(priority: .userInitiated) {
+            guard !candidate.sourcePath.isEmpty else { return false }
+            let sourceURL = URL(fileURLWithPath: candidate.sourcePath)
+            do {
+                let lowerName = sourceURL.lastPathComponent.lowercased()
+                if candidate.attachmentIdentifier == "file" ||
+                    (!lowerName.hasSuffix(".emlx") && !lowerName.hasSuffix(".partial.emlx")) {
+                    try FileManager.default.copyItem(at: sourceURL, to: destination)
+                } else {
+                    guard let data = try DirectEmlxReader.extractAttachment(
+                        identifier: candidate.attachmentIdentifier,
+                        preferredName: candidate.attachmentName,
+                        from: sourceURL
+                    ) else { return false }
+                    try data.write(to: destination, options: .atomic)
+                }
+                return FileManager.default.fileExists(atPath: destination.path)
+            } catch {
+                // Missing or malformed local attachments never block the other results.
+                return false
+            }
+        }.value
     }
 
     private static func cacheFileName(

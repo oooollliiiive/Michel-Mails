@@ -17,6 +17,7 @@ mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$binary_path" "$app_dir/Contents/MacOS/MichelMails"
 cp "$project_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 cp "$project_dir/Resources/MichelMails.icns" "$app_dir/Contents/Resources/MichelMails.icns"
+cp "$project_dir/THIRD_PARTY_NOTICES.md" "$app_dir/Contents/Resources/THIRD_PARTY_NOTICES.md"
 
 codesign --force --deep --sign - \
   --requirements "=designated => identifier \"$bundle_identifier\"" \

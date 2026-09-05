@@ -75,6 +75,15 @@ struct SearchView: View {
             }
 
             HStack(spacing: 7) {
+                if indexController.requiresFullDiskAccess {
+                    Button("Grant Full Disk Access") {
+                        indexController.openFullDiskAccessSettings()
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .help("Add Michel Mails in Privacy & Security › Full Disk Access, then reopen Michel Mails if macOS asks.")
+                }
                 Spacer()
                 Text("Force Scan")
                     .font(.system(size: 11.5, weight: .semibold))
@@ -107,21 +116,6 @@ struct SearchView: View {
 
                 Spacer(minLength: 8)
 
-                if indexController.isAvailable {
-                    Text(indexController.progress.statusText)
-                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(indexController.progress.isFinished ? Color.secondary : Color.orange)
-                        .lineLimit(1)
-                        .help(indexController.progress.isFinished
-                            ? "Email scan complete"
-                            : "Email scan not finished — results may be incomplete")
-                } else {
-                    Text("Email scan reconnecting…")
-                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.orange)
-                        .lineLimit(1)
-                }
-
                 if viewModel.pendingCopy != nil {
                     Button("Cancel", action: viewModel.cancelCopy)
                         .controlSize(.small)
@@ -139,6 +133,19 @@ struct SearchView: View {
                                 .fill((viewModel.usesOpenAI ? Color.purple : Color.secondary).opacity(0.1))
                         )
                 }
+            }
+
+            VStack(spacing: 4) {
+                scanProgressRow(
+                    title: "Email index",
+                    progress: indexController.progress,
+                    color: indexController.progress.isFinished ? .secondary : .orange
+                )
+                scanProgressRow(
+                    title: "Full content scan",
+                    progress: indexController.fullContentProgress,
+                    color: indexController.fullContentProgress.isFinished ? .secondary : .purple
+                )
             }
 
             HStack(spacing: 6) {
@@ -195,6 +202,32 @@ struct SearchView: View {
 
     private var scanDiagnosticText: String {
         indexController.scanActivityText + " · Last issue: " + indexController.lastScanErrorText
+    }
+
+    private func scanProgressRow(
+        title: String,
+        progress: MailScanProgress,
+        color: Color
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(scanCountText(progress))
+                .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                .foregroundStyle(color)
+                .lineLimit(1)
+        }
+        .help(progress.isFinished
+            ? "This scan is complete."
+            : "This scan is not finished — results may be incomplete.")
+    }
+
+    private func scanCountText(_ progress: MailScanProgress) -> String {
+        let totalText = progress.total == 0 ? "—" : progress.total.formatted()
+        let base = "\(progress.scanned.formatted()) / \(totalText)"
+        return progress.failures > 0 ? "\(base) · \(progress.failures.formatted()) skipped" : base
     }
 
     private var historySuggestions: some View {

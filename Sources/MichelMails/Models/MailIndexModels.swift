@@ -36,6 +36,7 @@ struct IndexedMailAttachment: Equatable, Sendable {
     let isImage: Bool
     let isUsefulImage: Bool
     let isDownloaded: Bool
+    var sourcePath: String = ""
 }
 
 struct IndexedMailMessage: Equatable, Sendable {
@@ -52,6 +53,7 @@ struct IndexedMailMessage: Equatable, Sendable {
     let isSent: Bool
     let attachments: [IndexedMailAttachment]
     var bodyWasScanned: Bool = true
+    var sourcePath: String = ""
 
     var key: String {
         if !messageIdentifier.isEmpty { return "message:\(messageIdentifier)" }
@@ -73,6 +75,7 @@ struct IndexedMailAttachmentCandidate: Equatable, Sendable {
     let MIMEType: String
     let sizeBytes: Int64
     let kind: MailAttachmentKind
+    var sourcePath: String = ""
 
     var message: MailMessageItem {
         MailMessageItem(
@@ -86,6 +89,21 @@ struct IndexedMailAttachmentCandidate: Equatable, Sendable {
             receivedAt: receivedAt
         )
     }
+}
+
+struct DirectMailScanBatch: Equatable, Sendable {
+    let messages: [IndexedMailMessage]
+    let nextRowID: Int64
+    let attemptedCount: Int
+    let failureCount: Int
+    let isFinished: Bool
+}
+
+struct DirectMailScanState: Equatable, Sendable {
+    var indexProgress = MailScanProgress(phase: .metadata)
+    var indexCursorRowID: Int64 = 0
+    var contentProgress = MailScanProgress(phase: .content)
+    var contentCursorRowID: Int64 = 0
 }
 
 struct MailScanBatch: Equatable, Sendable {

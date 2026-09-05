@@ -79,9 +79,9 @@ final class SearchViewModel: ObservableObject {
                 case .search:
                     let results = try await searchWithFuzzyFallback(parsedQuery)
                     if results.items.isEmpty {
-                        statusText = indexController.progress.isFinished
-                            ? "No emails found."
-                            : "No emails found in the scanned messages yet."
+                        statusText = scansAreIncomplete
+                            ? "No emails found in the scanned messages yet."
+                            : "No emails found."
                     } else {
                         onResultsReady?(results)
                         statusText = results.items.count == 1
@@ -96,8 +96,7 @@ final class SearchViewModel: ObservableObject {
                         if gallery.attemptedCount > 0 {
                             let noun = parsedQuery.action == .showImages ? "images" : "files"
                             statusText = "\(gallery.attemptedCount) matching \(noun) found, but none could be displayed."
-                        } else if indexController.progress.phase == .metadata &&
-                                    !indexController.progress.isFinished {
+                        } else if scansAreIncomplete {
                             statusText = parsedQuery.action == .showImages
                                 ? "No images found in scanned emails yet."
                                 : "No files found in scanned emails yet."
@@ -116,8 +115,7 @@ final class SearchViewModel: ObservableObject {
                     let result = try await imageSummaryWithFuzzyFallback(parsedQuery)
                     let summary = result.summary
                     if summary.imageCount == 0 {
-                        statusText = indexController.progress.phase == .metadata &&
-                            !indexController.progress.isFinished
+                        statusText = scansAreIncomplete
                             ? "No images found in scanned emails yet."
                             : "No images found."
                     } else {
@@ -321,6 +319,10 @@ final class SearchViewModel: ObservableObject {
     private func hideHistory() {
         historyIsVisible = false
         onHistorySuggestionsChanged?(0)
+    }
+
+    private var scansAreIncomplete: Bool {
+        !indexController.progress.isFinished || !indexController.fullContentProgress.isFinished
     }
 }
 

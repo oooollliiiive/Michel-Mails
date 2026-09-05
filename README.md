@@ -6,7 +6,7 @@ Michel Mails permet de formuler des recherches en langage naturel, en français 
 
 ## Principes du produit
 
-- Interface minimale sous forme de barre flottante et déplaçable.
+- Interface minimale sous forme de barre déplaçable.
 - Position de la fenêtre mémorisée.
 - Compréhension conversationnelle bilingue français–anglais.
 - Recherche sémantique et résolution approximative des correspondants.
@@ -18,20 +18,20 @@ Michel Mails permet de formuler des recherches en langage naturel, en français 
 
 Le MVP comprend :
 
-- une barre flottante SwiftUI, déplaçable, dont la position est mémorisée ;
+- une barre SwiftUI déplaçable, dont la position est mémorisée, sans rester au-dessus des autres applications ;
 - une vraie présence dans le Dock, avec une icône dédiée et réouverture de la barre au clic ;
 - une interprétation bilingue français–anglais via l’API OpenAI Responses ;
 - un schéma de sortie strict pour convertir le sens du prompt en filtres et en ordre de tri fiables, sans coder chaque formulation en dur ;
 - un mode local de secours ;
 - la correction approximative des noms grâce aux Contacts et à la similarité orthographique ;
-- un index SQLite local et progressif du texte intégral, des correspondants, des dates, des tailles exactes et des pièces jointes ;
+- un premier index local rapide des correspondants, objets, dates, tailles et pièces jointes, suivi d’un second scan progressif du contenu intégral déjà téléchargé ;
 - des recherches exécutées dans cet index sans afficher ni piloter l’interface de Mail ;
 - une recherche utilisable pendant l’indexation, accompagnée de l’avertissement `Email scan not finished — results may be incomplete` ;
 - un scan résilient qui ignore un email illisible et poursuit immédiatement le travail ;
-- un compteur persistant du type `2,345 / 32,463 emails scanned` et une surveillance des nouveaux emails tant que l’application reste ouverte ;
+- deux compteurs persistants, `Email index` et `Full content scan`, et une surveillance des nouveaux emails tant que l’application reste ouverte ;
 - un interrupteur `Force Scan`, remis sur `OFF` à chaque lancement, qui utilise de gros lots, des délais très courts et ignore rapidement les emails trop lents lorsqu’il est activé ;
 - une reprise immédiate depuis le dernier curseur enregistré, sans attendre le recomptage complet de toutes les boîtes Mail ;
-- un superviseur permanent : base locale indisponible, erreur Mail, lot bloqué ou email invalide déclenchent respectivement reconnexion, arrêt forcé ou passage au suivant, sans terminer le scan ;
+- un superviseur permanent : base locale indisponible, fichier absent ou email invalide déclenchent respectivement reconnexion ou passage au suivant, sans terminer le scan ;
 - une liste compacte de résultats affichée directement dans Michel Mails, avec ouverture individuelle dans Mail ;
 - la détection des images jointes en excluant les petits logos, les bannières et les éléments de signature ;
 - une grille universelle inspirée de Michel OS pour les images, PDF, documents, tableurs, présentations, archives, fichiers audio et vidéo ;
@@ -73,9 +73,10 @@ swift test
 
 1. Ouvrir `Michel Mails.app`.
 2. Ajouter une clé API OpenAI dans les réglages de l’application.
-3. Accepter l’autorisation d’automatiser Mail lorsqu’elle est demandée.
+3. Ajouter `/Applications/Michel Mails.app` dans Réglages Système › Confidentialité et sécurité › Accès complet au disque, puis rouvrir l’application.
+4. Accepter l’autorisation d’automatiser Mail seulement lors de la première utilisation de `Open in Mail`.
 
-Michel Mails n’a pas besoin de l’autorisation Accessibilité. AppleScript lit et extrait les données en arrière-plan sans activer Mail ni ouvrir de fenêtre. Mail ne devient visible que lorsque l’utilisateur choisit explicitement `Open in Mail`.
+Michel Mails n’a pas besoin de l’autorisation Accessibilité. L’index et les fichiers locaux de Mail sont ouverts uniquement en lecture. Mail ne devient visible que lorsque l’utilisateur choisit explicitement `Open in Mail`.
 
 ## Exemples
 
