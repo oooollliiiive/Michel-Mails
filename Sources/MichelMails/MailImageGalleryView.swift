@@ -5,6 +5,7 @@ struct MailImageGalleryView: View {
     let gallery: MailImageGallery
     @ObservedObject var indexController: MailIndexController
     let onOpenEmail: (MailMessageItem) -> Void
+    let onClose: () -> Void
 
     @State private var selectedIDs: Set<UUID> = []
     @State private var statusMessage = "Select files · drag them anywhere or copy and paste"
@@ -38,7 +39,6 @@ struct MailImageGalleryView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 690, minHeight: 480)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -90,7 +90,7 @@ struct MailImageGalleryView: View {
             Button("Copy", action: copySelected)
                 .disabled(selectedIDs.isEmpty)
 
-            Button("Open in Mail") {
+            Button("Open in Email") {
                 if let item = selectedItems.first { onOpenEmail(item.message) }
             }
             .disabled(selectedItems.count != 1)
@@ -98,6 +98,14 @@ struct MailImageGalleryView: View {
             Button(saveButtonTitle, action: saveSelected)
                 .buttonStyle(.borderedProminent)
                 .disabled(selectedIDs.isEmpty)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Close the gallery")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -151,43 +159,50 @@ struct MailImageGalleryView: View {
     private func imageCard(_ item: MailImageItem) -> some View {
         let selected = selectedIDs.contains(item.id)
         return VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .topTrailing) {
+            ZStack {
                 GalleryThumbnail(item: item)
                     .frame(maxWidth: .infinity)
                     .frame(height: 156)
                     .background(Color(nsColor: .controlBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
-                if selected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 22, weight: .semibold))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, Color.accentColor)
-                        .padding(8)
-                }
+                VStack(spacing: 0) {
+                    HStack(alignment: .top, spacing: 5) {
+                        Text(item.displayName)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 5)
+                            .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                        Spacer(minLength: 2)
+                        if selected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 22, weight: .semibold))
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, Color.accentColor)
+                        }
+                    }
+                    .padding(7)
 
-                VStack {
                     Spacer()
-                    Text(displayDate(item.message.receivedAt))
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 6))
-                        .padding(7)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Sent by \(item.message.sender)")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text(displayDate(item.message.receivedAt))
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(7)
                 }
             }
-
-            Text(item.displayName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 8)
         }
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -211,7 +226,7 @@ struct MailImageGalleryView: View {
             Button("Open File") {
                 NSWorkspace.shared.open(item.cachedURL)
             }
-            Button("Open in Mail") {
+            Button("Open in Email") {
                 onOpenEmail(item.message)
             }
             Divider()
@@ -345,15 +360,24 @@ struct MailImageGalleryView: View {
     private func displayDate(_ date: Date?) -> String {
         guard let date else { return "Unknown date" }
         let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "Today" }
-        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        if calendar.isDateInToday(date) {
+            let time = date.formatted(
+                Date.FormatStyle(date: .omitted, time: .shortened)
+                    .locale(Locale(identifier: "en_US"))
+            )
+            return "Today at \(time)"
+        }
         let days = calendar.dateComponents(
             [.day],
             from: calendar.startOfDay(for: date),
             to: calendar.startOfDay(for: Date())
         ).day ?? 0
-        if days > 1 && days < 15 { return "\(days) days ago" }
-        return date.formatted(.dateTime.month(.abbreviated).day().year())
+        if days == 1 { return "1 day ago" }
+        if days > 1 { return "\(days) days ago" }
+        return date.formatted(
+            Date.FormatStyle(date: .abbreviated, time: .omitted)
+                .locale(Locale(identifier: "en_US"))
+        )
     }
 }
 

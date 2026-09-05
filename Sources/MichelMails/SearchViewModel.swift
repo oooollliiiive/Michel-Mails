@@ -13,7 +13,9 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var AIInterpretationEnabled: Bool
     @Published var historyIsVisible = false
     @Published private(set) var recentPrompts: [String] = []
-    var onGalleryReady: ((MailImageGallery) -> Void)?
+    @Published private(set) var displayedGallery: MailImageGallery?
+    @Published private(set) var imageCorrespondents: [String] = []
+    var onGalleryVisibilityChanged: ((Bool) -> Void)?
     var onResultsReady: ((MailSearchResults) -> Void)?
     var onHistorySuggestionsChanged: ((Int) -> Void)?
 
@@ -109,7 +111,7 @@ final class SearchViewModel: ObservableObject {
                             statusText = parsedQuery.action == .showImages ? "No images found." : "No files found."
                         }
                     } else {
-                        onGalleryReady?(gallery)
+                        displayGallery(gallery)
                         let noun = parsedQuery.action == .showImages ? "image" : "file"
                         statusText = gallery.items.count == 1
                             ? "1 \(noun) displayed."
@@ -134,6 +136,74 @@ final class SearchViewModel: ObservableObject {
                 }
             } catch {
                 statusText = userFacingMessage(for: error)
+            }
+        }
+    }
+
+    func showLatestImages(
+        count: Int,
+        direction: MailDirection,
+        correspondent: String
+    ) {
+        guard !isWorking else { return }
+        hideHistory()
+        pendingCopy = nil
+        isWorking = true
+        statusText = "Preparing the latest images from the local index…"
+
+        Task {
+            defer { isWorking = false }
+            do {
+                let candidates = try await indexController.latestImageAttachments(
+                    targetCount: count,
+                    direction: direction,
+                    correspondent: correspondent
+                ) ?? []
+                var query = MailQuery()
+                query.action = .showImages
+                query.direction = direction
+                query.sender = correspondent.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+                query.hasImage = true
+                query.hasAttachment = true
+                query.limit = max(count, 1)
+                query.attachmentKinds = [.image]
+                query.sortOrder = .newestFirst
+
+                let gallery = try await mailService.galleryImages(query, candidates: candidates)
+                guard !gallery.items.isEmpty else {
+                    closeGallery()
+                    if gallery.attemptedCount > 0 {
+                        statusText = "Images were indexed, but their local files are not available yet."
+                    } else {
+                        statusText = scansAreIncomplete
+                            ? "No images found in scanned emails yet."
+                            : "No images found."
+                    }
+                    refreshImageCorrespondents()
+                    return
+                }
+
+                displayGallery(gallery)
+                statusText = gallery.items.count == 1
+                    ? "1 image displayed."
+                    : "\(gallery.items.count) images displayed."
+                refreshImageCorrespondents()
+            } catch {
+                statusText = userFacingMessage(for: error)
+            }
+        }
+    }
+
+    func closeGallery() {
+        guard displayedGallery != nil else { return }
+        displayedGallery = nil
+        onGalleryVisibilityChanged?(false)
+    }
+
+    func refreshImageCorrespondents() {
+        Task {
+            if let correspondents = try? await indexController.recentImageCorrespondents(limit: 100) {
+                imageCorrespondents = correspondents
             }
         }
     }
@@ -326,6 +396,11 @@ final class SearchViewModel: ObservableObject {
 
     private func userFacingMessage(for error: Error) -> String {
         (error as? MichelMailsError)?.errorDescription ?? "Something went wrong."
+    }
+
+    private func displayGallery(_ gallery: MailImageGallery) {
+        displayedGallery = gallery
+        onGalleryVisibilityChanged?(true)
     }
 
     private func recordInHistory(_ request: String) {

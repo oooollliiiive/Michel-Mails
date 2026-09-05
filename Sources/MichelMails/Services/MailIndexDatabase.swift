@@ -538,32 +538,110 @@ actor MailIndexDatabase {
 
         var candidates: [IndexedMailAttachmentCandidate] = []
         while sqlite3_step(statement) == SQLITE_ROW {
-            let receivedAt = sqlite3_column_type(statement, 5) == SQLITE_NULL
-                ? nil
-                : Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
-            let kind = MailAttachmentKind(rawValue: Self.text(at: 13, in: statement)) ?? .other
-            candidates.append(
-                IndexedMailAttachmentCandidate(
-                    messageIdentifier: Self.text(at: 0, in: statement),
-                    localIdentifier: Self.text(at: 1, in: statement),
-                    sender: Self.text(at: 2, in: statement),
-                    subject: Self.text(at: 3, in: statement),
-                    preview: Self.text(at: 4, in: statement)
-                        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression),
-                    receivedAt: receivedAt,
-                    accountName: Self.text(at: 6, in: statement),
-                    mailboxName: Self.text(at: 7, in: statement),
-                    attachmentIdentifier: Self.text(at: 9, in: statement),
-                    attachmentName: Self.text(at: 10, in: statement),
-                    MIMEType: Self.text(at: 11, in: statement),
-                    sizeBytes: sqlite3_column_int64(statement, 12),
-                    kind: kind,
-                    messageSourcePath: Self.text(at: 8, in: statement),
-                    sourcePath: Self.text(at: 14, in: statement)
-                )
-            )
+            candidates.append(Self.attachmentCandidate(from: statement))
         }
         return candidates
+    }
+
+    /// Returns at least `targetCount` recent images without ever cutting an
+    /// email in half. If the boundary email contains 27 images, all 27 are
+    /// returned even when the requested target is 20.
+    func latestImageAttachments(
+        targetCount: Int,
+        direction: MailDirection,
+        correspondent: String
+    ) throws -> [IndexedMailAttachmentCandidate] {
+        var conditions = [
+            "a.kind = 'image'",
+            "a.is_useful_image = 1",
+            "(a.source_path <> '' OR m.source_path <> '')"
+        ]
+        var bindings: [Binding] = []
+
+        switch direction {
+        case .any:
+            break
+        case .received:
+            conditions.append("m.is_sent = 0")
+        case .sent:
+            conditions.append("m.is_sent = 1")
+        }
+
+        let trimmedCorrespondent = correspondent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCorrespondent.isEmpty {
+            conditions.append("lower(m.sender || ' ' || m.recipients) LIKE lower(?)")
+            bindings.append(.text("%\(trimmedCorrespondent)%"))
+        }
+
+        let SQL = """
+        SELECT m.message_key,
+               m.message_identifier, m.local_identifier, m.sender, m.subject,
+               substr(m.body, 1, 240), m.received_at, m.account_name, m.mailbox_name,
+               m.source_path, a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind,
+               CASE WHEN a.source_path <> '' THEN a.source_path ELSE m.source_path END
+        FROM attachments a
+        JOIN messages m ON m.message_key = a.message_key
+        WHERE \(conditions.joined(separator: " AND "))
+        ORDER BY m.received_at DESC, m.message_key DESC, a.attachment_key ASC
+        """
+        guard let statement = try prepare(SQL) else {
+            throw MichelMailsError.index("The recent image search could not be prepared.")
+        }
+        defer { sqlite3_finalize(statement) }
+        try bind(bindings, to: statement)
+
+        let target = max(targetCount, 1)
+        var result: [IndexedMailAttachmentCandidate] = []
+        var currentMessageKey: String?
+        var currentMessageImages: [IndexedMailAttachmentCandidate] = []
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let messageKey = Self.text(at: 0, in: statement)
+            if let currentMessageKey, currentMessageKey != messageKey {
+                result.append(contentsOf: currentMessageImages)
+                if result.count >= target { return result }
+                currentMessageImages.removeAll(keepingCapacity: true)
+            }
+            currentMessageKey = messageKey
+            currentMessageImages.append(Self.attachmentCandidate(from: statement, offset: 1))
+        }
+        result.append(contentsOf: currentMessageImages)
+        return result
+    }
+
+    func recentImageCorrespondents(limit: Int) throws -> [String] {
+        let SQL = """
+        SELECT m.sender, m.recipients
+        FROM messages m
+        WHERE EXISTS (
+            SELECT 1 FROM attachments a
+            WHERE a.message_key = m.message_key
+              AND a.kind = 'image'
+              AND a.is_useful_image = 1
+        )
+        ORDER BY m.received_at DESC, m.message_key DESC
+        LIMIT ?
+        """
+        guard let statement = try prepare(SQL) else {
+            throw MichelMailsError.index("The correspondent list could not be prepared.")
+        }
+        defer { sqlite3_finalize(statement) }
+        try bind([.integer(Int64(max(limit, 1)))], to: statement)
+
+        var result: [String] = []
+        var seen: Set<String> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            for column in 0...1 {
+                for identity in Self.contactIdentities(in: Self.text(at: Int32(column), in: statement)) {
+                    let key = identity.folding(
+                        options: [.diacriticInsensitive, .caseInsensitive],
+                        locale: .current
+                    )
+                    if seen.insert(key).inserted { result.append(identity) }
+                }
+            }
+        }
+        return result
     }
 
     private func upsertMetadata(_ message: IndexedMailMessage) throws {
@@ -783,6 +861,56 @@ actor MailIndexDatabase {
         return String(cString: value)
     }
 
+    private static func attachmentCandidate(
+        from statement: OpaquePointer,
+        offset: Int32 = 0
+    ) -> IndexedMailAttachmentCandidate {
+        let receivedAt = sqlite3_column_type(statement, offset + 5) == SQLITE_NULL
+            ? nil
+            : Date(timeIntervalSince1970: sqlite3_column_double(statement, offset + 5))
+        let kind = MailAttachmentKind(rawValue: text(at: offset + 13, in: statement)) ?? .other
+        return IndexedMailAttachmentCandidate(
+            messageIdentifier: text(at: offset, in: statement),
+            localIdentifier: text(at: offset + 1, in: statement),
+            sender: text(at: offset + 2, in: statement),
+            subject: text(at: offset + 3, in: statement),
+            preview: text(at: offset + 4, in: statement)
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression),
+            receivedAt: receivedAt,
+            accountName: text(at: offset + 6, in: statement),
+            mailboxName: text(at: offset + 7, in: statement),
+            attachmentIdentifier: text(at: offset + 9, in: statement),
+            attachmentName: text(at: offset + 10, in: statement),
+            MIMEType: text(at: offset + 11, in: statement),
+            sizeBytes: sqlite3_column_int64(statement, offset + 12),
+            kind: kind,
+            messageSourcePath: text(at: offset + 8, in: statement),
+            sourcePath: text(at: offset + 14, in: statement)
+        )
+    }
+
+    private static func contactIdentities(in rawValue: String) -> [String] {
+        let rawValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawValue.isEmpty else { return [] }
+
+        var identities: [String] = []
+        var pending = ""
+        for piece in rawValue.split(separator: ",", omittingEmptySubsequences: true) {
+            let text = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            pending = pending.isEmpty ? text : pending + ", " + text
+
+            // A display name may itself contain a comma. Keep accumulating
+            // until its <address> is complete.
+            if pending.contains("<") && !pending.contains(">") { continue }
+            if pending.contains("@") || !pending.contains("<") {
+                identities.append(pending)
+                pending = ""
+            }
+        }
+        if !pending.isEmpty { identities.append(pending) }
+        return identities
+    }
+
     private static func searchTokens(in value: String) -> [String] {
         value
             .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
@@ -838,6 +966,7 @@ actor MailIndexDatabase {
     );
     CREATE INDEX IF NOT EXISTS attachments_message_key ON attachments(message_key);
     CREATE INDEX IF NOT EXISTS attachments_size_bytes ON attachments(size_bytes);
+    CREATE INDEX IF NOT EXISTS attachments_kind_useful ON attachments(kind, is_useful_image, message_key);
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
         message_key UNINDEXED,
         sender,

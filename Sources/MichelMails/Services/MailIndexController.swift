@@ -52,6 +52,24 @@ final class MailIndexController: ObservableObject {
         return try await database.searchAttachments(query)
     }
 
+    func latestImageAttachments(
+        targetCount: Int,
+        direction: MailDirection,
+        correspondent: String
+    ) async throws -> [IndexedMailAttachmentCandidate]? {
+        guard let database, try await database.indexedMessageCount() > 0 else { return nil }
+        return try await database.latestImageAttachments(
+            targetCount: targetCount,
+            direction: direction,
+            correspondent: correspondent
+        )
+    }
+
+    func recentImageCorrespondents(limit: Int = 100) async throws -> [String] {
+        guard let database, try await database.indexedMessageCount() > 0 else { return [] }
+        return try await database.recentImageCorrespondents(limit: limit)
+    }
+
     private func runScan() async {
         while !Task.isCancelled {
             do {

@@ -4,9 +4,16 @@ struct SearchView: View {
     @ObservedObject var viewModel: SearchViewModel
     @ObservedObject var indexController: MailIndexController
     @FocusState private var promptIsFocused: Bool
+    @State private var latestImageCount = 20
+    @State private var imageDirection: MailDirection = .any
+    @State private var imageCorrespondent = ""
+    @State private var quickFilterTask: Task<Void, Never>?
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 0) {
+            VStack(spacing: 12) {
+            quickImageControls
+
             HStack(spacing: 12) {
                 Image(systemName: "sparkle.magnifyingglass")
                     .font(.system(size: 22, weight: .semibold))
@@ -179,19 +186,129 @@ struct SearchView: View {
                     .help(scanDiagnosticText)
             }
             .frame(height: 12)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 16)
+            .frame(minWidth: 660, idealWidth: 720, maxWidth: 720)
+            .frame(maxWidth: .infinity)
+
+            if let gallery = viewModel.displayedGallery {
+                Divider()
+                MailImageGalleryView(
+                    gallery: gallery,
+                    indexController: indexController,
+                    onOpenEmail: viewModel.openMessage,
+                    onClose: viewModel.closeGallery
+                )
+                .id(gallery.id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 24)
-        .padding(.bottom, 16)
-        .frame(minWidth: 660, idealWidth: 720, maxWidth: 720)
+        .frame(minWidth: 660)
         .background(.ultraThinMaterial)
         .onAppear {
+            viewModel.refreshImageCorrespondents()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 promptIsFocused = true
             }
         }
+        .onChange(of: imageCorrespondent) { _ in
+            scheduleQuickImageRefresh()
+        }
+        .onChange(of: imageDirection) { _ in
+            scheduleQuickImageRefresh(delayNanoseconds: 50_000_000)
+        }
+        .onChange(of: indexController.progress.scanned) { scanned in
+            if scanned > 0 && scanned % 500 == 0 {
+                viewModel.refreshImageCorrespondents()
+            }
+        }
         .sheet(isPresented: $viewModel.showSettings) {
             SettingsView(viewModel: viewModel)
+        }
+    }
+
+    private var quickImageControls: some View {
+        HStack(spacing: 8) {
+            Button {
+                latestImageCount = max(1, latestImageCount - 1)
+                scheduleQuickImageRefresh(delayNanoseconds: 50_000_000)
+            } label: {
+                Image(systemName: "minus")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.borderless)
+            .disabled(latestImageCount <= 1 || viewModel.isWorking)
+            .help("Show one fewer image")
+
+            Button {
+                viewModel.showLatestImages(
+                    count: latestImageCount,
+                    direction: imageDirection,
+                    correspondent: imageCorrespondent
+                )
+            } label: {
+                Text(latestImageCount == 1 ? "1 Last Image" : "\(latestImageCount) Last Images")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(minWidth: 104)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.isWorking)
+            .help("Show these images without using AI")
+
+            Button {
+                latestImageCount += 1
+                scheduleQuickImageRefresh(delayNanoseconds: 50_000_000)
+            } label: {
+                Image(systemName: "plus")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewModel.isWorking)
+            .help("Show one more image")
+
+            Divider()
+                .frame(height: 20)
+
+            Picker("Direction", selection: $imageDirection) {
+                Text("Sent").tag(MailDirection.sent)
+                Text("Received").tag(MailDirection.received)
+                Text("Both").tag(MailDirection.any)
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 105)
+            .help("Choose sent emails, received emails, or both")
+
+            CorrespondentComboBox(
+                text: $imageCorrespondent,
+                items: viewModel.imageCorrespondents,
+                placeholder: "Everyone"
+            )
+            .frame(minWidth: 170, idealWidth: 220, maxWidth: 260, minHeight: 24, maxHeight: 24)
+            .help("Type part of a name or email address")
+
+            Spacer(minLength: 0)
+        }
+        .frame(height: 26)
+    }
+
+    private func scheduleQuickImageRefresh(delayNanoseconds: UInt64 = 350_000_000) {
+        guard viewModel.displayedGallery != nil else { return }
+        quickFilterTask?.cancel()
+        quickFilterTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled else { return }
+            while viewModel.isWorking {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            viewModel.showLatestImages(
+                count: latestImageCount,
+                direction: imageDirection,
+                correspondent: imageCorrespondent
+            )
         }
     }
 
@@ -279,6 +396,58 @@ struct SearchView: View {
         }
         .padding(.leading, 34)
         .padding(.trailing, 76)
+    }
+}
+
+private struct CorrespondentComboBox: NSViewRepresentable {
+    @Binding var text: String
+    let items: [String]
+    let placeholder: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> NSComboBox {
+        let comboBox = NSComboBox()
+        comboBox.delegate = context.coordinator
+        comboBox.isEditable = true
+        comboBox.completes = true
+        comboBox.numberOfVisibleItems = 12
+        comboBox.placeholderString = placeholder
+        comboBox.font = .systemFont(ofSize: 12)
+        comboBox.controlSize = .small
+        comboBox.addItems(withObjectValues: items)
+        return comboBox
+    }
+
+    func updateNSView(_ comboBox: NSComboBox, context: Context) {
+        let existing = comboBox.objectValues.compactMap { $0 as? String }
+        if existing != items {
+            comboBox.removeAllItems()
+            comboBox.addItems(withObjectValues: items)
+        }
+        if comboBox.currentEditor() == nil && comboBox.stringValue != text {
+            comboBox.stringValue = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSComboBoxDelegate {
+        @Binding private var text: String
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let comboBox = notification.object as? NSComboBox else { return }
+            text = comboBox.stringValue
+        }
+
+        func comboBoxSelectionDidChange(_ notification: Notification) {
+            guard let comboBox = notification.object as? NSComboBox else { return }
+            text = comboBox.stringValue
+        }
     }
 }
 

@@ -286,6 +286,90 @@ func splitMetadataAndBodyIndexing() async throws {
     #expect(imageResults[0].message.reference.sourcePath == "/private/tmp/fixture-message.emlx")
 }
 
+@Test("Latest images keep a boundary email whole and filter either side of correspondence")
+func latestImageShortcutSearch() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let database = try MailIndexDatabase(databaseURL: directory.appendingPathComponent("quick.sqlite"))
+    func images(_ count: Int, prefix: String) -> [IndexedMailAttachment] {
+        (1...count).map { number in
+            IndexedMailAttachment(
+                identifier: "\(prefix)-\(number)",
+                name: "\(prefix)-\(number).jpg",
+                MIMEType: "image/jpeg",
+                sizeBytes: 400_000,
+                isImage: true,
+                isUsefulImage: true,
+                isDownloaded: true,
+                sourcePath: "/tmp/\(prefix)-\(number).jpg"
+            )
+        }
+    }
+    let messages = [
+        IndexedMailMessage(
+            messageIdentifier: "latest",
+            localIdentifier: "3",
+            sender: "Raffi Adlan <raffi@example.com>",
+            recipients: "Michel <michel@example.com>",
+            subject: "Latest album",
+            body: "",
+            receivedAt: Date(timeIntervalSince1970: 300),
+            sizeBytes: 3_000_000,
+            mailboxName: "Inbox",
+            accountName: "Google",
+            isSent: false,
+            attachments: images(3, prefix: "latest")
+        ),
+        IndexedMailMessage(
+            messageIdentifier: "sent",
+            localIdentifier: "2",
+            sender: "Michel <michel@example.com>",
+            recipients: "Raffi Adlan <raffi@example.com>",
+            subject: "Sent album",
+            body: "",
+            receivedAt: Date(timeIntervalSince1970: 200),
+            sizeBytes: 2_000_000,
+            mailboxName: "Sent",
+            accountName: "Google",
+            isSent: true,
+            attachments: images(2, prefix: "sent")
+        )
+    ]
+    _ = try await database.saveDirectMetadata(
+        DirectMailScanBatch(
+            messages: messages,
+            nextRowID: 3,
+            attemptedCount: 2,
+            failureCount: 0,
+            isFinished: true
+        ),
+        total: 2,
+        previous: MailScanProgress(total: 2, phase: .metadata)
+    )
+
+    let boundaryResults = try await database.latestImageAttachments(
+        targetCount: 2,
+        direction: .any,
+        correspondent: ""
+    )
+    #expect(boundaryResults.count == 3)
+    #expect(Set(boundaryResults.map(\.messageIdentifier)) == ["latest"])
+
+    let sentToRaffi = try await database.latestImageAttachments(
+        targetCount: 20,
+        direction: .sent,
+        correspondent: "raf"
+    )
+    #expect(sentToRaffi.count == 2)
+    #expect(Set(sentToRaffi.map(\.messageIdentifier)) == ["sent"])
+
+    let correspondents = try await database.recentImageCorrespondents(limit: 100)
+    #expect(correspondents.contains("Raffi Adlan <raffi@example.com>"))
+}
+
 @Test("The partial local index searches words, file kinds, and oldest order")
 func partialLocalIndexSearch() async throws {
     let directory = FileManager.default.temporaryDirectory
