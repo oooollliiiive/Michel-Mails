@@ -229,6 +229,10 @@ func partialLocalIndexSearch() async throws {
         total: 20,
         previous: MailScanProgress(scanned: 0, total: 20, failures: 0, isFinished: false)
     )
+    let resumedState = try await database.state(total: 0)
+    #expect(resumedState.progress.total == 20)
+    #expect(resumedState.progress.scanned == 2)
+    #expect(resumedState.cursor == MailScanCursor(mailboxIndex: 1, messageIndex: 3))
 
     var query = MailQuery(
         direction: .received,

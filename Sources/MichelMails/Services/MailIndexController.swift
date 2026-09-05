@@ -45,12 +45,27 @@ final class MailIndexController: ObservableObject {
     }
 
     private func runScan() async {
+        let database: MailIndexDatabase
         do {
-            let database = try MailIndexDatabase()
+            database = try MailIndexDatabase()
             self.database = database
-            while !Task.isCancelled {
-                let total = try await source.totalMessageCount()
-                var state = try await database.state(total: total)
+        } catch {
+            isAvailable = false
+            scanTask = nil
+            return
+        }
+
+        while !Task.isCancelled {
+            do {
+                // Resume from the durable cursor immediately. Recounting more
+                // than 100,000 mailbox entries can take minutes and must never
+                // block an existing scan at launch.
+                var state = try await database.state(total: 0)
+                if state.progress.total == 0 || state.progress.isFinished {
+                    let latestTotal = try await source.totalMessageCount(timeout: 180)
+                    state = try await database.state(total: latestTotal)
+                }
+                isAvailable = true
                 progress = state.progress
                 var consecutiveBatchFailures = 0
 
@@ -100,9 +115,15 @@ final class MailIndexController: ObservableObject {
 
                 // Keep watching for newly arrived mail while Michel Mails stays open.
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
+            } catch {
+                if Task.isCancelled { break }
+                // Mail can temporarily be synchronizing or unavailable. Keep the
+                // durable cursor and reconnect instead of disabling the scanner.
+                isAvailable = true
+                try? await Task.sleep(
+                    nanoseconds: forceScanEnabled ? 250_000_000 : 2_000_000_000
+                )
             }
-        } catch {
-            isAvailable = false
         }
         scanTask = nil
     }
@@ -117,8 +138,12 @@ private actor MailScanSource {
         }
     }
 
-    func totalMessageCount() async throws -> Int {
-        let output = try await runAppleScript(Self.totalCountScript, arguments: [])
+    func totalMessageCount(timeout: TimeInterval = 180) async throws -> Int {
+        let output = try await runAppleScript(
+            Self.totalCountScript,
+            arguments: [],
+            timeout: timeout
+        )
         guard let count = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw MichelMailsError.index("Mail did not return its message count.")
         }
