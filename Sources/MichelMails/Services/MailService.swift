@@ -113,23 +113,55 @@ final class MailService {
     }
 
     func openMessage(_ message: MailMessageItem) async throws {
-        let output = try await Self.runAppleScript(
-            Self.openMessageScript,
-            arguments: [
-                message.reference.messageIdentifier,
-                message.reference.localIdentifier
-            ]
-        )
-        if output.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
+        if await Self.openLocalMessageFile(at: message.reference.sourcePath) {
             return
         }
 
         let identifier = message.reference.messageIdentifier
+        var scriptError: Error?
+        do {
+            let output = try await Self.runAppleScript(
+                Self.openMessageScript,
+                arguments: [identifier, message.reference.mailboxName]
+            )
+            if output.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
+                return
+            }
+        } catch {
+            scriptError = error
+        }
+
         if let messageURL = Self.messageURL(for: identifier),
            NSWorkspace.shared.open(messageURL) {
             return
         }
+        if let scriptError { throw scriptError }
         throw MichelMailsError.mail("The original email could not be opened.")
+    }
+
+    private static func openLocalMessageFile(at path: String) async -> Bool {
+        guard !path.isEmpty else { return false }
+        let URL = URL(fileURLWithPath: path)
+        let lowerName = URL.lastPathComponent.lowercased()
+        guard (lowerName.hasSuffix(".emlx") || lowerName.hasSuffix(".partial.emlx")),
+              FileManager.default.isReadableFile(atPath: URL.path),
+              let mailApplication = NSWorkspace.shared.urlForApplication(
+                  withBundleIdentifier: "com.apple.mail"
+              ) else {
+            return false
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        return await withCheckedContinuation { continuation in
+            NSWorkspace.shared.open(
+                [URL],
+                withApplicationAt: mailApplication,
+                configuration: configuration
+            ) { _, error in
+                continuation.resume(returning: error == nil)
+            }
+        }
     }
 
     nonisolated static func messageURL(for identifier: String) -> URL? {
@@ -297,39 +329,93 @@ final class MailService {
         }.value
     }
 
-    private static let openMessageScript = #"""
+    static let openMessageScript = #"""
     on run argv
         set targetMessageIdentifier to item 1 of argv
-        set targetLocalIdentifier to item 2 of argv
+        set targetMailboxName to item 2 of argv
 
         tell application "Mail"
             activate
-            if (count of message viewers) is 0 then return "0"
-            set targetViewer to message viewer 1
-            repeat with aMessage in visible messages of targetViewer
-                set isMatch to false
-                if targetMessageIdentifier is not "" then
+            if targetMessageIdentifier is "" then return "0"
+
+            if (count of message viewers) > 0 then
+                repeat with aMessage in visible messages of message viewer 1
                     try
-                        set isMatch to (message id of aMessage as text) is targetMessageIdentifier
+                        if (message id of aMessage as text) is targetMessageIdentifier then
+                            my openFoundMessage(contents of aMessage)
+                            return "1"
+                        end if
                     end try
-                end if
-                if not isMatch and targetLocalIdentifier is not "" then
-                    try
-                        set isMatch to (id of aMessage as text) is targetLocalIdentifier
-                    end try
-                end if
-                if isMatch then
-                    try
-                        open contents of aMessage
-                    on error
-                        set selected messages of targetViewer to {contents of aMessage}
-                    end try
-                    return "1"
-                end if
+                end repeat
+            end if
+
+            set accountCandidates to every account
+
+            -- Try the indexed mailbox name first. The account identifier in
+            -- the local database is not always Mail's displayed account name.
+            if targetMailboxName is not "" then
+                repeat with anAccount in accountCandidates
+                    repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
+                        try
+                            if (name of aMailbox as text) is targetMailboxName then
+                                if my openMessageInMailbox(contents of aMailbox, targetMessageIdentifier) then return "1"
+                            end if
+                        end try
+                    end repeat
+                end repeat
+            end if
+
+            -- The email may have moved after indexing. A filtered lookup in
+            -- each mailbox is slower, but it is deterministic and avoids
+            -- relying on a message:// URL for the fallback.
+            repeat with anAccount in accountCandidates
+                repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
+                    if my openMessageInMailbox(contents of aMailbox, targetMessageIdentifier) then return "1"
+                end repeat
             end repeat
         end tell
         return "0"
     end run
+
+    on openMessageInMailbox(aMailbox, targetMessageIdentifier)
+        tell application "Mail"
+            try
+                set messageCandidates to every message of aMailbox whose message id is targetMessageIdentifier
+                if (count of messageCandidates) > 0 then
+                    my openFoundMessage(contents of item 1 of messageCandidates)
+                    return true
+                end if
+            end try
+        end tell
+        return false
+    end openMessageInMailbox
+
+    on openFoundMessage(aMessage)
+        tell application "Mail"
+            try
+                open aMessage
+            on error
+                if (count of message viewers) > 0 then
+                    set selected messages of message viewer 1 to {aMessage}
+                end if
+            end try
+        end tell
+    end openFoundMessage
+
+    on flattenedMailboxes(aContainer)
+        set collectedMailboxes to {}
+        tell application "Mail"
+            try
+                repeat with aMailbox in every mailbox of aContainer
+                    set end of collectedMailboxes to contents of aMailbox
+                    try
+                        set collectedMailboxes to collectedMailboxes & my flattenedMailboxes(contents of aMailbox)
+                    end try
+                end repeat
+            end try
+        end tell
+        return collectedMailboxes
+    end flattenedMailboxes
     """#
 
     private static let backgroundAttachmentScript = #"""

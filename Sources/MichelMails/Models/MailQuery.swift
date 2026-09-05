@@ -96,6 +96,9 @@ struct MailQuery: Codable, Equatable, Sendable {
 struct MailMessageReference: Equatable, Sendable {
     let messageIdentifier: String
     let localIdentifier: String
+    var accountName: String = ""
+    var mailboxName: String = ""
+    var sourcePath: String = ""
 }
 
 struct MailMessageItem: Identifiable, Equatable, Sendable {

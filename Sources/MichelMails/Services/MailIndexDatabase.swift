@@ -427,7 +427,8 @@ actor MailIndexDatabase {
 
         let SQL = """
         SELECT m.message_identifier, m.local_identifier, m.sender, m.subject,
-               substr(m.body, 1, 240), m.received_at
+               substr(m.body, 1, 240), m.received_at,
+               m.account_name, m.mailbox_name, m.source_path
         FROM messages m
         \(whereClause)
         ORDER BY m.received_at \(order), m.message_key \(order)
@@ -450,7 +451,10 @@ actor MailIndexDatabase {
                 MailMessageItem(
                     reference: MailMessageReference(
                         messageIdentifier: Self.text(at: 0, in: statement),
-                        localIdentifier: Self.text(at: 1, in: statement)
+                        localIdentifier: Self.text(at: 1, in: statement),
+                        accountName: Self.text(at: 6, in: statement),
+                        mailboxName: Self.text(at: 7, in: statement),
+                        sourcePath: Self.text(at: 8, in: statement)
                     ),
                     sender: sender.isEmpty ? "Unknown sender" : sender,
                     subject: subject.isEmpty ? "(No subject)" : subject,
@@ -518,7 +522,7 @@ actor MailIndexDatabase {
         let SQL = """
         SELECT m.message_identifier, m.local_identifier, m.sender, m.subject,
                substr(m.body, 1, 240), m.received_at, m.account_name, m.mailbox_name,
-               a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind,
+               m.source_path, a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind,
                CASE WHEN a.source_path <> '' THEN a.source_path ELSE m.source_path END
         FROM attachments a
         JOIN messages m ON m.message_key = a.message_key
@@ -537,7 +541,7 @@ actor MailIndexDatabase {
             let receivedAt = sqlite3_column_type(statement, 5) == SQLITE_NULL
                 ? nil
                 : Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
-            let kind = MailAttachmentKind(rawValue: Self.text(at: 12, in: statement)) ?? .other
+            let kind = MailAttachmentKind(rawValue: Self.text(at: 13, in: statement)) ?? .other
             candidates.append(
                 IndexedMailAttachmentCandidate(
                     messageIdentifier: Self.text(at: 0, in: statement),
@@ -549,12 +553,13 @@ actor MailIndexDatabase {
                     receivedAt: receivedAt,
                     accountName: Self.text(at: 6, in: statement),
                     mailboxName: Self.text(at: 7, in: statement),
-                    attachmentIdentifier: Self.text(at: 8, in: statement),
-                    attachmentName: Self.text(at: 9, in: statement),
-                    MIMEType: Self.text(at: 10, in: statement),
-                    sizeBytes: sqlite3_column_int64(statement, 11),
+                    attachmentIdentifier: Self.text(at: 9, in: statement),
+                    attachmentName: Self.text(at: 10, in: statement),
+                    MIMEType: Self.text(at: 11, in: statement),
+                    sizeBytes: sqlite3_column_int64(statement, 12),
                     kind: kind,
-                    sourcePath: Self.text(at: 13, in: statement)
+                    messageSourcePath: Self.text(at: 8, in: statement),
+                    sourcePath: Self.text(at: 14, in: statement)
                 )
             )
         }

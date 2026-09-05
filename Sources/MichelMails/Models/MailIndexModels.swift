@@ -75,13 +75,17 @@ struct IndexedMailAttachmentCandidate: Equatable, Sendable {
     let MIMEType: String
     let sizeBytes: Int64
     let kind: MailAttachmentKind
+    var messageSourcePath: String = ""
     var sourcePath: String = ""
 
     var message: MailMessageItem {
         MailMessageItem(
             reference: MailMessageReference(
                 messageIdentifier: messageIdentifier,
-                localIdentifier: localIdentifier
+                localIdentifier: localIdentifier,
+                accountName: accountName,
+                mailboxName: mailboxName,
+                sourcePath: messageSourcePath
             ),
             sender: sender.isEmpty ? "Unknown sender" : sender,
             subject: subject.isEmpty ? "(No subject)" : subject,

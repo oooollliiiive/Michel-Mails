@@ -14,6 +14,15 @@ func mailMessageURL() throws {
     #expect(MailService.messageURL(for: "730") == nil)
 }
 
+@Test("The targeted Apple Mail fallback script compiles")
+@MainActor
+func openMessageScriptCompiles() throws {
+    let script = try #require(NSAppleScript(source: MailService.openMessageScript))
+    var error: NSDictionary?
+    #expect(script.compileAndReturnError(&error))
+    #expect(error == nil)
+}
+
 @Test("French copy prompt extracts sender, images, all results, and destination")
 func frenchPromptWithTypoAndImageCopy() {
     let query = LocalQueryInterpreter().interpret(
@@ -214,7 +223,8 @@ func splitMetadataAndBodyIndexing() async throws {
         accountName: "Google",
         isSent: false,
         attachments: [attachment],
-        bodyWasScanned: false
+        bodyWasScanned: false,
+        sourcePath: "/private/tmp/fixture-message.emlx"
     )
     let metadataProgress = try await database.save(
         MailScanBatch(
@@ -232,7 +242,9 @@ func splitMetadataAndBodyIndexing() async throws {
     #expect(metadataProgress.phase == .metadata)
 
     var subjectQuery = MailQuery(sender: "Michel", keywords: ["garden"])
-    #expect(try await database.searchMessages(subjectQuery).items.count == 1)
+    let immediateResults = try await database.searchMessages(subjectQuery).items
+    #expect(immediateResults.count == 1)
+    #expect(immediateResults[0].reference.sourcePath == "/private/tmp/fixture-message.emlx")
 
     let contentState = try await database.beginContentPass(total: 1)
     #expect(contentState.progress.phase == .content)
@@ -269,7 +281,9 @@ func splitMetadataAndBodyIndexing() async throws {
     #expect(try await database.searchMessages(subjectQuery).items.count == 1)
     var imageQuery = MailQuery(action: .showImages, hasImage: true, hasAttachment: true)
     imageQuery.attachmentKinds = [.image]
-    #expect(try await database.searchAttachments(imageQuery).count == 1)
+    let imageResults = try await database.searchAttachments(imageQuery)
+    #expect(imageResults.count == 1)
+    #expect(imageResults[0].message.reference.sourcePath == "/private/tmp/fixture-message.emlx")
 }
 
 @Test("The partial local index searches words, file kinds, and oldest order")
