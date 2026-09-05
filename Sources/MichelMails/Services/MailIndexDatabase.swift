@@ -236,6 +236,102 @@ actor MailIndexDatabase {
         return MailSearchResults(items: items, query: query)
     }
 
+    func searchAttachments(_ query: MailQuery) throws -> [IndexedMailAttachmentCandidate] {
+        var conditions: [String] = ["a.size_bytes > 0"]
+        var bindings: [Binding] = []
+
+        switch query.direction {
+        case .any:
+            break
+        case .received:
+            conditions.append("m.is_sent = 0")
+        case .sent:
+            conditions.append("m.is_sent = 1")
+        }
+        if let sender = query.sender?.trimmingCharacters(in: .whitespacesAndNewlines), !sender.isEmpty {
+            conditions.append("lower(m.sender) LIKE lower(?)")
+            bindings.append(.text("%\(sender)%"))
+        }
+        if let startDate = query.startDate {
+            conditions.append("m.received_at >= ?")
+            bindings.append(.double(startDate.timeIntervalSince1970))
+        }
+        if let endDate = query.endDate {
+            conditions.append("m.received_at < ?")
+            bindings.append(.double(endDate.timeIntervalSince1970))
+        }
+
+        let requestedKinds = query.attachmentKinds.isEmpty && query.hasImage
+            ? [MailAttachmentKind.image]
+            : query.attachmentKinds
+        if !requestedKinds.isEmpty {
+            let placeholders = Array(repeating: "?", count: requestedKinds.count)
+                .joined(separator: ", ")
+            conditions.append("a.kind IN (\(placeholders))")
+            bindings.append(contentsOf: requestedKinds.map { .text($0.rawValue) })
+        }
+        if query.hasImage || requestedKinds == [.image] {
+            conditions.append("a.is_useful_image = 1")
+        }
+
+        let searchTokens = query.keywords.flatMap(Self.searchTokens)
+        if !searchTokens.isEmpty {
+            let FTSQuery = searchTokens
+                .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*" }
+                .joined(separator: " AND ")
+            conditions.append(
+                "m.message_key IN (SELECT message_key FROM messages_fts WHERE messages_fts MATCH ?)"
+            )
+            bindings.append(.text(FTSQuery))
+        }
+
+        let order = query.sortOrder == .oldestFirst ? "ASC" : "DESC"
+        let maximumResults = query.allResults ? 100_000 : min(max(query.limit, 1), 100)
+        bindings.append(.integer(Int64(maximumResults)))
+        let SQL = """
+        SELECT m.message_identifier, m.local_identifier, m.sender, m.subject,
+               substr(m.body, 1, 240), m.received_at, m.account_name, m.mailbox_name,
+               a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind
+        FROM attachments a
+        JOIN messages m ON m.message_key = a.message_key
+        WHERE \(conditions.joined(separator: " AND "))
+        ORDER BY m.received_at \(order), a.attachment_key \(order)
+        LIMIT ?
+        """
+        guard let statement = try prepare(SQL) else {
+            throw MichelMailsError.index("The local attachment search could not be prepared.")
+        }
+        defer { sqlite3_finalize(statement) }
+        try bind(bindings, to: statement)
+
+        var candidates: [IndexedMailAttachmentCandidate] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let receivedAt = sqlite3_column_type(statement, 5) == SQLITE_NULL
+                ? nil
+                : Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
+            let kind = MailAttachmentKind(rawValue: Self.text(at: 12, in: statement)) ?? .other
+            candidates.append(
+                IndexedMailAttachmentCandidate(
+                    messageIdentifier: Self.text(at: 0, in: statement),
+                    localIdentifier: Self.text(at: 1, in: statement),
+                    sender: Self.text(at: 2, in: statement),
+                    subject: Self.text(at: 3, in: statement),
+                    preview: Self.text(at: 4, in: statement)
+                        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression),
+                    receivedAt: receivedAt,
+                    accountName: Self.text(at: 6, in: statement),
+                    mailboxName: Self.text(at: 7, in: statement),
+                    attachmentIdentifier: Self.text(at: 8, in: statement),
+                    attachmentName: Self.text(at: 9, in: statement),
+                    MIMEType: Self.text(at: 10, in: statement),
+                    sizeBytes: sqlite3_column_int64(statement, 11),
+                    kind: kind
+                )
+            )
+        }
+        return candidates
+    }
+
     private func upsert(_ message: IndexedMailMessage) throws {
         let attachmentNames = message.attachments.map(\.name).joined(separator: " ")
         try run(

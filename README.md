@@ -25,6 +25,7 @@ Le MVP comprend :
 - un mode local de secours ;
 - la correction approximative des noms grâce aux Contacts et à la similarité orthographique ;
 - un index SQLite local et progressif du texte intégral, des correspondants, des dates, des tailles exactes et des pièces jointes ;
+- des recherches exécutées dans cet index sans afficher ni piloter l’interface de Mail ;
 - une recherche utilisable pendant l’indexation, accompagnée de l’avertissement `Email scan not finished — results may be incomplete` ;
 - un scan résilient qui ignore un email illisible et poursuit immédiatement le travail ;
 - un compteur persistant du type `2,345 / 32,463 emails scanned` et une surveillance des nouveaux emails tant que l’application reste ouverte ;
@@ -69,10 +70,9 @@ swift test
 
 1. Ouvrir `Michel Mails.app`.
 2. Ajouter une clé API OpenAI dans les réglages de l’application.
-3. Autoriser Michel Mails dans **Réglages Système → Confidentialité et sécurité → Accessibilité**.
-4. Accepter l’autorisation d’automatiser Mail lorsqu’elle est demandée.
+3. Accepter l’autorisation d’automatiser Mail lorsqu’elle est demandée.
 
-L’autorisation d’accessibilité sert uniquement à placer la requête interprétée dans le champ de recherche natif de Mail. AppleScript est ensuite utilisé pour vérifier les dates et les pièces jointes, récupérer les métadonnées nécessaires à l’affichage local, ouvrir un message choisi, et copier les images après confirmation.
+Michel Mails n’a pas besoin de l’autorisation Accessibilité. AppleScript lit et extrait les données en arrière-plan sans activer Mail ni ouvrir de fenêtre. Mail ne devient visible que lorsque l’utilisateur choisit explicitement `Open in Mail`.
 
 ## Exemples
 

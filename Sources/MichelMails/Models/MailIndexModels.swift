@@ -51,6 +51,35 @@ struct IndexedMailMessage: Equatable, Sendable {
     }
 }
 
+struct IndexedMailAttachmentCandidate: Equatable, Sendable {
+    let messageIdentifier: String
+    let localIdentifier: String
+    let sender: String
+    let subject: String
+    let preview: String
+    let receivedAt: Date?
+    let accountName: String
+    let mailboxName: String
+    let attachmentIdentifier: String
+    let attachmentName: String
+    let MIMEType: String
+    let sizeBytes: Int64
+    let kind: MailAttachmentKind
+
+    var message: MailMessageItem {
+        MailMessageItem(
+            reference: MailMessageReference(
+                messageIdentifier: messageIdentifier,
+                localIdentifier: localIdentifier
+            ),
+            sender: sender.isEmpty ? "Unknown sender" : sender,
+            subject: subject.isEmpty ? "(No subject)" : subject,
+            preview: preview,
+            receivedAt: receivedAt
+        )
+    }
+}
+
 struct MailScanBatch: Equatable, Sendable {
     let messages: [IndexedMailMessage]
     let nextCursor: MailScanCursor

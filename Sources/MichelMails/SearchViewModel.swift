@@ -73,7 +73,7 @@ final class SearchViewModel: ObservableObject {
                     APIKey: APIKeyDraft.nilIfBlank,
                     model: modelDraft.nilIfBlank ?? "gpt-5.4-mini"
                 )
-                statusText = "Searching in Mail…"
+                statusText = "Searching the local email index…"
 
                 switch parsedQuery.action {
                 case .search:
@@ -108,7 +108,11 @@ final class SearchViewModel: ObservableObject {
                     if summary.imageCount == 0 {
                         statusText = "No images found."
                     } else {
-                        pendingCopy = PendingCopy(query: result.query, summary: summary)
+                        pendingCopy = PendingCopy(
+                            query: result.query,
+                            summary: summary,
+                            candidates: result.candidates
+                        )
                         statusText = copyConfirmationText(for: result.query, summary: summary)
                     }
                 }
@@ -138,15 +142,14 @@ final class SearchViewModel: ObservableObject {
 
         Task {
             defer { isWorking = false }
-            do {
-                let result = try await mailService.copyImages(pendingCopy.query, to: destination)
-                statusText = result.imageCount == 1
-                    ? "1 image copied to \(destination.lastPathComponent)."
-                    : "\(result.imageCount) images copied to \(destination.lastPathComponent)."
-                NSWorkspace.shared.activateFileViewerSelecting([destination])
-            } catch {
-                statusText = userFacingMessage(for: error)
-            }
+            let result = await mailService.copyAttachments(
+                pendingCopy.candidates,
+                to: destination
+            )
+            statusText = result.imageCount == 1
+                ? "1 image copied to \(destination.lastPathComponent)."
+                : "\(result.imageCount) images copied to \(destination.lastPathComponent)."
+            NSWorkspace.shared.activateFileViewerSelecting([destination])
         }
     }
 
@@ -205,23 +208,29 @@ final class SearchViewModel: ObservableObject {
         if let indexedResults = try await indexController.searchMessages(query) {
             return indexedResults
         }
-        return try await mailService.searchMessages(query)
+        return MailSearchResults(items: [], query: query)
     }
 
     private func imageSummaryWithFuzzyFallback(
         _ query: MailQuery
-    ) async throws -> (query: MailQuery, summary: MailMatchSummary) {
-        let exactSummary = try await mailService.countImages(query)
+    ) async throws -> (
+        query: MailQuery,
+        summary: MailMatchSummary,
+        candidates: [IndexedMailAttachmentCandidate]
+    ) {
+        let exactCandidates = try await attachmentCandidates(for: query)
+        let exactSummary = summary(for: exactCandidates)
         guard exactSummary.imageCount == 0, query.needsSenderResolution else {
-            return (query, exactSummary)
+            return (query, exactSummary, exactCandidates)
         }
 
         statusText = "Looking for a similar contact name…"
         let resolved = try await mailService.resolvingSender(in: query)
-        guard resolved.sender != query.sender else { return (query, exactSummary) }
+        guard resolved.sender != query.sender else { return (query, exactSummary, exactCandidates) }
 
         statusText = "Likely contact: \(resolved.sender ?? query.sender ?? "") · searching again…"
-        return (resolved, try await mailService.countImages(resolved))
+        let resolvedCandidates = try await attachmentCandidates(for: resolved)
+        return (resolved, summary(for: resolvedCandidates), resolvedCandidates)
     }
 
     private func galleryWithFuzzyFallback(_ query: MailQuery) async throws -> MailImageGallery {
@@ -239,10 +248,24 @@ final class SearchViewModel: ObservableObject {
     }
 
     private func gallery(for query: MailQuery) async throws -> MailImageGallery {
+        let candidates = try await attachmentCandidates(for: query)
         if query.action == .showFiles {
-            return try await mailService.galleryFiles(query)
+            return try await mailService.galleryFiles(query, candidates: candidates)
         }
-        return try await mailService.galleryImages(query)
+        return try await mailService.galleryImages(query, candidates: candidates)
+    }
+
+    private func attachmentCandidates(
+        for query: MailQuery
+    ) async throws -> [IndexedMailAttachmentCandidate] {
+        try await indexController.searchAttachments(query) ?? []
+    }
+
+    private func summary(
+        for candidates: [IndexedMailAttachmentCandidate]
+    ) -> MailMatchSummary {
+        let messageKeys = Set(candidates.map { $0.messageIdentifier + "|" + $0.localIdentifier })
+        return MailMatchSummary(messageCount: messageKeys.count, imageCount: candidates.count)
     }
 
     private func destinationURL(for query: MailQuery) -> URL? {

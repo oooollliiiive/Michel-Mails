@@ -25,6 +25,11 @@ final class MailIndexController: ObservableObject {
         return try await database.searchMessages(query)
     }
 
+    func searchAttachments(_ query: MailQuery) async throws -> [IndexedMailAttachmentCandidate]? {
+        guard let database, try await database.indexedMessageCount() > 0 else { return nil }
+        return try await database.searchAttachments(query)
+    }
+
     private func runScan() async {
         do {
             let database = try MailIndexDatabase()
@@ -38,7 +43,7 @@ final class MailIndexController: ObservableObject {
 
                 while !Task.isCancelled && !progress.isFinished {
                     do {
-                        let batch = try await source.batch(from: state.cursor, maximumCount: 8)
+                        let batch = try await source.batch(from: state.cursor, maximumCount: 24)
                         progress = try await database.save(batch, total: progress.total, previous: progress)
                         state.cursor = batch.nextCursor
                         consecutiveBatchFailures = 0
@@ -68,8 +73,6 @@ final class MailIndexController: ObservableObject {
                         }
                         try? await Task.sleep(nanoseconds: 750_000_000)
                     }
-
-                    try? await Task.sleep(nanoseconds: 80_000_000)
                 }
 
                 // Keep watching for newly arrived mail while Michel Mails stays open.
@@ -141,6 +144,7 @@ private actor MailScanSource {
     }
 
     private static let totalCountScript = #"""
+    tell application "Mail" to launch
     set totalCount to 0
     tell application "Mail"
         repeat with anAccount in every account
@@ -156,6 +160,7 @@ private actor MailScanSource {
 
     private static let batchScript = #"""
     on run argv
+        tell application "Mail" to launch
         set mailboxIndex to (item 1 of argv) as integer
         set messageIndex to (item 2 of argv) as integer
         set maximumCount to (item 3 of argv) as integer
@@ -266,7 +271,9 @@ private actor MailScanSource {
                 set subjectText to subject of aMessage as text
             end try
             try
-                set bodyText to content of aMessage as text
+                with timeout of 5 seconds
+                    set bodyText to content of aMessage as text
+                end timeout
             end try
             try
                 set receivedText to my ISODateText(date received of aMessage)
@@ -277,7 +284,10 @@ private actor MailScanSource {
             set isSentMessage to my messageLooksSent(aMessage, mailboxName)
 
             try
-                repeat with anAttachment in every mail attachment of aMessage
+                with timeout of 5 seconds
+                    set messageAttachments to every mail attachment of aMessage
+                end timeout
+                repeat with anAttachment in messageAttachments
                     set attachmentIdentifier to ""
                     set attachmentName to ""
                     set MIMEText to ""

@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import Foundation
 import ImageIO
 
@@ -28,71 +27,67 @@ final class MailService {
         return resolved
     }
 
-    func searchMessages(_ query: MailQuery) async throws -> MailSearchResults {
-        try await performMailSearch(query)
-        let output = try await Self.runAppleScript(
-            Self.filterScript,
-            arguments: scriptArguments(mode: "list_messages", query: query, destination: "")
-        )
-        NSApp.activate(ignoringOtherApps: true)
-        return MailSearchResults(
-            items: MailScriptRecordParser.messages(from: output),
-            query: query
-        )
-    }
-
-    func countImages(_ query: MailQuery) async throws -> MailMatchSummary {
-        try await performMailSearch(query)
-        let output = try await Self.runAppleScript(
-            Self.filterScript,
-            arguments: scriptArguments(mode: "count_images", query: query, destination: "")
-        )
-        NSApp.activate(ignoringOtherApps: true)
-        return parseSummary(output)
-    }
-
-    func galleryImages(_ query: MailQuery) async throws -> MailImageGallery {
+    func galleryImages(
+        _ query: MailQuery,
+        candidates: [IndexedMailAttachmentCandidate]
+    ) async throws -> MailImageGallery {
         var imageQuery = query
         imageQuery.hasImage = true
         imageQuery.hasAttachment = true
         if imageQuery.attachmentKinds.isEmpty {
             imageQuery.attachmentKinds = [.image]
         }
-        return try await galleryFiles(imageQuery)
+        return try await galleryFiles(imageQuery, candidates: candidates)
     }
 
-    func galleryFiles(_ query: MailQuery) async throws -> MailImageGallery {
+    func galleryFiles(
+        _ query: MailQuery,
+        candidates: [IndexedMailAttachmentCandidate]
+    ) async throws -> MailImageGallery {
         var fileQuery = query
         fileQuery.hasAttachment = true
 
         let cacheDirectory = try prepareGalleryCache()
-        try await performMailSearch(fileQuery)
-        let mode = fileQuery.action == .showFiles ? "gallery_files" : "gallery_images"
-        let output = try await Self.runAppleScript(
-            Self.filterScript,
-            arguments: scriptArguments(
-                mode: mode,
-                query: fileQuery,
-                destination: cacheDirectory.path
+        var items: [MailImageItem] = []
+        for (offset, candidate) in candidates.enumerated() {
+            let targetURL = cacheDirectory.appendingPathComponent(
+                Self.cacheFileName(for: candidate, position: offset + 1)
             )
-        )
-        NSApp.activate(ignoringOtherApps: true)
-        let items = MailScriptRecordParser.files(from: output, in: cacheDirectory)
-            .filter { $0.kind != .image || Self.isUsefulVisualAttachment(at: $0.cachedURL) }
+            if await extract(candidate, to: targetURL) {
+                let item = MailImageItem(
+                    cachedURL: targetURL,
+                    displayName: candidate.attachmentName.isEmpty ? "Untitled file" : candidate.attachmentName,
+                    MIMEType: candidate.MIMEType,
+                    kind: candidate.kind,
+                    message: candidate.message
+                )
+                if item.kind != .image || Self.isUsefulVisualAttachment(at: targetURL) {
+                    items.append(item)
+                }
+            }
+        }
         return MailImageGallery(
             items: items,
             query: fileQuery
         )
     }
 
-    func copyImages(_ query: MailQuery, to destination: URL) async throws -> MailMatchSummary {
-        try await performMailSearch(query)
-        let output = try await Self.runAppleScript(
-            Self.filterScript,
-            arguments: scriptArguments(mode: "copy_images", query: query, destination: destination.path)
-        )
-        NSApp.activate(ignoringOtherApps: true)
-        return parseSummary(output)
+    func copyAttachments(
+        _ candidates: [IndexedMailAttachmentCandidate],
+        to destination: URL
+    ) async -> MailMatchSummary {
+        var copiedCount = 0
+        var messageKeys: Set<String> = []
+        for (offset, candidate) in candidates.enumerated() {
+            let requestedName = candidate.attachmentName.isEmpty ? "Untitled file" : candidate.attachmentName
+            let proposedURL = destination.appendingPathComponent(requestedName)
+            let targetURL = availableURL(for: proposedURL, position: offset + 1)
+            if await extract(candidate, to: targetURL) {
+                copiedCount += 1
+                messageKeys.insert(candidate.messageIdentifier + "|" + candidate.localIdentifier)
+            }
+        }
+        return MailMatchSummary(messageCount: messageKeys.count, imageCount: copiedCount)
     }
 
     func openMessage(_ message: MailMessageItem) async throws {
@@ -117,112 +112,58 @@ final class MailService {
         throw MichelMailsError.mail("The original email could not be opened.")
     }
 
-    private func performMailSearch(_ query: MailQuery) async throws {
-        let accessibilityOptions = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ] as CFDictionary
-        guard AXIsProcessTrustedWithOptions(accessibilityOptions) else {
-            throw MichelMailsError.mail(
-                "Allow Michel Mails in System Settings › Privacy & Security › Accessibility, then try again."
+    private func extract(
+        _ candidate: IndexedMailAttachmentCandidate,
+        to destination: URL
+    ) async -> Bool {
+        do {
+            let output = try await Self.runAppleScript(
+                Self.backgroundAttachmentScript,
+                arguments: [
+                    candidate.accountName,
+                    candidate.mailboxName,
+                    candidate.messageIdentifier,
+                    candidate.localIdentifier,
+                    candidate.attachmentIdentifier,
+                    candidate.attachmentName,
+                    destination.path
+                ]
             )
-        }
-
-        let bundleIdentifier = "com.apple.mail"
-        let MailApplication: NSRunningApplication
-        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first {
-            MailApplication = running
-            running.activate(options: [.activateAllWindows])
-        } else {
-            let MailURL = URL(fileURLWithPath: "/System/Applications/Mail.app")
-            guard NSWorkspace.shared.open(MailURL) else {
-                throw MichelMailsError.mail("Could not open Apple Mail.")
-            }
-            try await Task.sleep(nanoseconds: 700_000_000)
-            guard let launched = NSRunningApplication
-                .runningApplications(withBundleIdentifier: bundleIdentifier)
-                .first else {
-                throw MichelMailsError.mail("Apple Mail did not launch.")
-            }
-            MailApplication = launched
-            launched.activate(options: [.activateAllWindows])
-        }
-
-        let viewerCountText = try await Self.runAppleScript(Self.prepareSearchViewerScript, arguments: [])
-        let viewerCount = Int(viewerCountText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        guard viewerCount > 0 else {
-            throw MichelMailsError.mail("Mail could not create a message window. Open a Mail window and try again.")
-        }
-        try await Task.sleep(nanoseconds: 450_000_000)
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
-            throw MichelMailsError.mail("Could not control Mail’s search field.")
-        }
-
-        postShortcut(
-            3,
-            flags: [.maskCommand, .maskAlternate],
-            source: source,
-            processIdentifier: MailApplication.processIdentifier
-        )
-        try await Task.sleep(nanoseconds: 250_000_000)
-        postCommandKey(0, source: source, processIdentifier: MailApplication.processIdentifier)
-        postText(nativeSearchText(for: query), source: source, processIdentifier: MailApplication.processIdentifier)
-        postKey(36, source: source, processIdentifier: MailApplication.processIdentifier)
-        try await waitForMailSearchToSettle()
-    }
-
-    private func waitForMailSearchToSettle() async throws {
-        try await Task.sleep(nanoseconds: 800_000_000)
-        var previousCount: Int?
-        var stableChecks = 0
-
-        for _ in 0..<8 {
-            let rawCount = try? await Self.runAppleScript(Self.visibleCountScript, arguments: [])
-            let currentCount = rawCount.flatMap {
-                Int($0.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
-
-            if let currentCount, currentCount == previousCount {
-                stableChecks += 1
-                if stableChecks >= 2 { return }
-            } else {
-                stableChecks = 0
-                previousCount = currentCount
-            }
-            try await Task.sleep(nanoseconds: 300_000_000)
+            return output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+                && FileManager.default.fileExists(atPath: destination.path)
+        } catch {
+            // One unavailable attachment must not prevent the remaining files
+            // from being shown or copied.
+            return false
         }
     }
 
-    private func nativeSearchText(for query: MailQuery) -> String {
-        var pieces: [String] = []
-        if let sender = query.sender?.trimmingCharacters(in: .whitespacesAndNewlines), !sender.isEmpty {
-            let displayName = sender.components(separatedBy: "<").first?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? sender
-            pieces.append(displayName.contains(" ") ? "from:\"\(displayName)\"" : "from:\(displayName)")
-        }
-        pieces.append(contentsOf: query.keywords.map { $0.contains(" ") ? "\"\($0)\"" : $0 })
-        if pieces.isEmpty && (query.hasAttachment || query.hasImage) {
-            pieces.append("attachment")
-        }
-        return pieces.joined(separator: " ")
+    private static func cacheFileName(
+        for candidate: IndexedMailAttachmentCandidate,
+        position: Int
+    ) -> String {
+        let originalName = candidate.attachmentName.isEmpty ? "Untitled file" : candidate.attachmentName
+        let cleaned = originalName
+            .components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.controlCharacters))
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        let limited = String((cleaned.isEmpty ? "Untitled file" : cleaned).prefix(120))
+        return String(format: "%04d-%@", position, limited)
     }
 
-    private func scriptArguments(mode: String, query: MailQuery, destination: String) -> [String] {
-        let now = Date()
-        let startAge = query.startDate.map { max(0, Int(now.timeIntervalSince($0))) } ?? -1
-        let endAge = query.endDate.map { max(0, Int(now.timeIntervalSince($0))) } ?? -1
-        let effectiveLimit = query.allResults ? 100_000 : min(max(query.limit, 1), 100)
-        return [
-            mode,
-            String(startAge),
-            String(endAge),
-            query.hasAttachment ? "true" : "false",
-            query.hasImage ? "true" : "false",
-            String(effectiveLimit),
-            destination,
-            query.direction.rawValue,
-            query.attachmentKinds.map(\.rawValue).joined(separator: ","),
-            query.sortOrder.rawValue
-        ]
+    private func availableURL(for proposedURL: URL, position: Int) -> URL {
+        guard FileManager.default.fileExists(atPath: proposedURL.path) else { return proposedURL }
+        let extensionName = proposedURL.pathExtension
+        let stem = proposedURL.deletingPathExtension().lastPathComponent
+        var suffix = max(position, 2)
+        while true {
+            let name = extensionName.isEmpty
+                ? "\(stem) \(suffix)"
+                : "\(stem) \(suffix).\(extensionName)"
+            let candidate = proposedURL.deletingLastPathComponent().appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            suffix += 1
+        }
     }
 
     private func prepareGalleryCache() throws -> URL {
@@ -245,14 +186,6 @@ final class MailService {
         return cacheRoot
     }
 
-    private func parseSummary(_ output: String) -> MailMatchSummary {
-        let parts = output.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|")
-        return MailMatchSummary(
-            messageCount: parts.first.flatMap { Int($0) } ?? 0,
-            imageCount: parts.dropFirst().first.flatMap { Int($0) } ?? 0
-        )
-    }
-
     private static func isUsefulVisualAttachment(at URL: URL) -> Bool {
         guard let source = CGImageSourceCreateWithURL(URL as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -273,62 +206,6 @@ final class MailService {
         if longEdge / shortEdge > 10 { return false }
         if height < 180 && width < 1_000 && byteCount < 100_000 { return false }
         return true
-    }
-
-    private func postCommandKey(
-        _ keyCode: CGKeyCode,
-        source: CGEventSource,
-        processIdentifier: pid_t
-    ) {
-        postShortcut(
-            keyCode,
-            flags: .maskCommand,
-            source: source,
-            processIdentifier: processIdentifier
-        )
-    }
-
-    private func postShortcut(
-        _ keyCode: CGKeyCode,
-        flags: CGEventFlags,
-        source: CGEventSource,
-        processIdentifier: pid_t
-    ) {
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
-        keyDown?.flags = flags
-        keyUp?.flags = flags
-        keyDown?.postToPid(processIdentifier)
-        keyUp?.postToPid(processIdentifier)
-    }
-
-    private func postKey(
-        _ keyCode: CGKeyCode,
-        source: CGEventSource,
-        processIdentifier: pid_t
-    ) {
-        CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)?
-            .postToPid(processIdentifier)
-        CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)?
-            .postToPid(processIdentifier)
-    }
-
-    private func postText(
-        _ text: String,
-        source: CGEventSource,
-        processIdentifier: pid_t
-    ) {
-        let UTF16Text = Array(text.utf16)
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-        UTF16Text.withUnsafeBufferPointer { buffer in
-            keyDown?.keyboardSetUnicodeString(
-                stringLength: UTF16Text.count,
-                unicodeString: buffer.baseAddress
-            )
-        }
-        keyDown?.postToPid(processIdentifier)
-        CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)?
-            .postToPid(processIdentifier)
     }
 
     private static func runAppleScript(_ script: String, arguments: [String]) async throws -> String {
@@ -361,42 +238,6 @@ final class MailService {
             return output
         }.value
     }
-
-    private static let prepareSearchViewerScript = #"""
-    tell application "Mail"
-        activate
-        if (count of message viewers) is 0 then
-            try
-                make new message viewer
-            on error
-                try
-                    open inbox
-                end try
-            end try
-        end if
-        if (count of message viewers) is 0 then return "0"
-
-        set searchBoxes to {}
-        repeat with anAccount in every account
-            try
-                set searchBoxes to searchBoxes & every mailbox of anAccount
-            end try
-        end repeat
-        if (count of searchBoxes) > 0 then
-            try
-                set selected mailboxes of message viewer 1 to searchBoxes
-            end try
-        end if
-        return (count of message viewers) as text
-    end tell
-    """#
-
-    private static let visibleCountScript = #"""
-    tell application "Mail"
-        if (count of message viewers) is 0 then return 0
-        return count of visible messages of message viewer 1
-    end tell
-    """#
 
     private static let openMessageScript = #"""
     on run argv
@@ -431,6 +272,104 @@ final class MailService {
         end tell
         return "0"
     end run
+    """#
+
+    private static let backgroundAttachmentScript = #"""
+    on run argv
+        tell application "Mail" to launch
+        set targetAccountName to item 1 of argv
+        set targetMailboxName to item 2 of argv
+        set targetMessageIdentifier to item 3 of argv
+        set targetLocalIdentifier to item 4 of argv
+        set targetAttachmentIdentifier to item 5 of argv
+        set targetAttachmentName to item 6 of argv
+        set destinationPath to item 7 of argv
+
+        tell application "Mail"
+            set accountCandidates to every account
+            repeat with anAccount in accountCandidates
+                set accountMatches to targetAccountName is ""
+                try
+                    set accountMatches to accountMatches or ((name of anAccount as text) is targetAccountName)
+                end try
+                if accountMatches then
+                    set mailboxCandidates to my flattenedMailboxes(contents of anAccount)
+                    repeat with aMailbox in mailboxCandidates
+                        set mailboxMatches to targetMailboxName is ""
+                        try
+                            set mailboxMatches to mailboxMatches or ((name of aMailbox as text) is targetMailboxName)
+                        end try
+                        if mailboxMatches and my saveMatchingAttachment(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath) then return "1"
+                    end repeat
+                end if
+            end repeat
+
+            -- The message may have moved since it was indexed. Fall back to all
+            -- mailboxes without ever activating Mail or opening a viewer.
+            repeat with anAccount in accountCandidates
+                set mailboxCandidates to my flattenedMailboxes(contents of anAccount)
+                repeat with aMailbox in mailboxCandidates
+                    if my saveMatchingAttachment(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath) then return "1"
+                end repeat
+            end repeat
+        end tell
+        return "0"
+    end run
+
+    on saveMatchingAttachment(aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
+        tell application "Mail"
+            set messageCandidates to {}
+            if targetLocalIdentifier is not "" then
+                try
+                    set localNumber to targetLocalIdentifier as integer
+                    set messageCandidates to every message of aMailbox whose id is localNumber
+                end try
+            end if
+            if (count of messageCandidates) is 0 and targetMessageIdentifier is not "" then
+                try
+                    set messageCandidates to every message of aMailbox whose message id is targetMessageIdentifier
+                end try
+            end if
+
+            repeat with aMessage in messageCandidates
+                try
+                    repeat with anAttachment in every mail attachment of aMessage
+                        set attachmentMatches to false
+                        if targetAttachmentIdentifier is not "" then
+                            try
+                                set attachmentMatches to (id of anAttachment as text) is targetAttachmentIdentifier
+                            end try
+                        end if
+                        if not attachmentMatches and targetAttachmentName is not "" then
+                            try
+                                set attachmentMatches to (name of anAttachment as text) is targetAttachmentName
+                            end try
+                        end if
+                        if attachmentMatches then
+                            save anAttachment in POSIX file destinationPath
+                            return true
+                        end if
+                    end repeat
+                end try
+            end repeat
+        end tell
+        return false
+    end saveMatchingAttachment
+
+    on flattenedMailboxes(aContainer)
+        set collectedMailboxes to {}
+        tell application "Mail"
+            try
+                repeat with aMailbox in every mailbox of aContainer
+                    set end of collectedMailboxes to contents of aMailbox
+                    try
+                        set collectedMailboxes to collectedMailboxes & my flattenedMailboxes(contents of aMailbox)
+                    end try
+                end repeat
+            end try
+        end tell
+        return collectedMailboxes
+    end flattenedMailboxes
     """#
 
     private static let filterScript = #"""

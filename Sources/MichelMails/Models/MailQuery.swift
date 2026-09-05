@@ -97,6 +97,7 @@ struct PendingCopy: Identifiable, Equatable, Sendable {
     let id = UUID()
     let query: MailQuery
     let summary: MailMatchSummary
+    let candidates: [IndexedMailAttachmentCandidate]
 }
 
 enum MailScriptRecordParser {

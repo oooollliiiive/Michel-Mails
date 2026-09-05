@@ -242,6 +242,15 @@ func partialLocalIndexSearch() async throws {
     let PDFResults = try await database.searchMessages(query)
     #expect(PDFResults.items.map(\.reference.messageIdentifier) == ["old-message"])
 
+    var attachmentQuery = query
+    attachmentQuery.action = .showFiles
+    attachmentQuery.keywords = []
+    let attachments = try await database.searchAttachments(attachmentQuery)
+    #expect(attachments.count == 1)
+    #expect(attachments[0].attachmentName == "invoice.pdf")
+    #expect(attachments[0].sizeBytes == 2_400_000)
+    #expect(attachments[0].kind == .pdf)
+
     query.keywords = []
     query.hasAttachment = false
     query.attachmentKinds = []
