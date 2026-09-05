@@ -4,14 +4,12 @@ import SwiftUI
 struct MailSearchResultsView: View {
     let results: MailSearchResults
     @ObservedObject var indexController: MailIndexController
+    @ObservedObject var downloadManager: AttachmentDownloadManager
     let onOpenEmail: (MailMessageItem) -> Void
+    let onDownloadAttachments: (MailMessageItem) -> Void
     let onClose: () -> Void
 
-    @State private var selectedID: UUID?
-
-    private var selectedItem: MailMessageItem? {
-        results.items.first { $0.id == selectedID }
-    }
+    @State private var selectedItem: MailMessageItem?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -82,6 +80,11 @@ struct MailSearchResultsView: View {
             .buttonStyle(.borderedProminent)
             .disabled(selectedItem == nil)
 
+            Button("Download Attachments to Desktop") {
+                if let selectedItem { onDownloadAttachments(selectedItem) }
+            }
+            .disabled(selectedItem?.attachments.isEmpty != false)
+
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 18))
@@ -116,8 +119,8 @@ struct MailSearchResultsView: View {
     }
 
     private func resultRow(_ item: MailMessageItem) -> some View {
-        let selected = selectedID == item.id
-        let previews = previewItems(for: item)
+        let selected = selectedItem?.id == item.id
+        let previews = item.imageAttachments
 
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: "envelope.fill")
@@ -162,14 +165,17 @@ struct MailSearchResultsView: View {
             if !previews.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 5) {
-                        ForEach(previews) { preview in
-                            EmailAttachmentThumbnail(item: preview)
+                        ForEach(previews, id: \.stableKey) { preview in
+                            EmailAttachmentThumbnail(
+                                candidate: preview,
+                                downloadManager: downloadManager
+                            )
                         }
                     }
                 }
                 .frame(
-                    width: min(CGFloat(previews.count) * 49, 340),
-                    height: 48
+                    width: min(CGFloat(previews.count) * 95, 470),
+                    height: 78
                 )
             }
         }
@@ -181,13 +187,15 @@ struct MailSearchResultsView: View {
                 : Color(nsColor: .textBackgroundColor)
         )
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            selectedID = item.id
-            onOpenEmail(item)
-        }
         .onTapGesture {
-            selectedID = item.id
+            selectedItem = item
         }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                selectedItem = item
+                onOpenEmail(item)
+            }
+        )
         .contextMenu {
             Button("Open in Mail") {
                 onOpenEmail(item)
@@ -196,11 +204,6 @@ struct MailSearchResultsView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(item.sender), \(item.subject)")
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-    }
-
-    private func previewItems(for item: MailMessageItem) -> [MailImageItem] {
-        let key = item.reference.stableKey
-        return results.imagePreviews.filter { $0.message.reference.stableKey == key }
     }
 
     private func displayDate(_ date: Date) -> String {
@@ -215,8 +218,17 @@ struct MailSearchResultsView: View {
 }
 
 private struct EmailAttachmentThumbnail: View {
-    let item: MailImageItem
+    let candidate: IndexedMailAttachmentCandidate
+    @ObservedObject var downloadManager: AttachmentDownloadManager
     @State private var image: NSImage?
+
+    private var record: AttachmentTransferRecord? {
+        downloadManager.record(for: candidate)
+    }
+
+    private var thumbnailURL: URL? {
+        downloadManager.thumbnailURL(for: candidate)
+    }
 
     var body: some View {
         ZStack {
@@ -225,24 +237,40 @@ private struct EmailAttachmentThumbnail: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
+            } else if record?.state == .failed {
+                Button {
+                    downloadManager.retry(candidate)
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise.circle")
+                            .font(.system(size: 20, weight: .semibold))
+                        Text("Retry")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
             } else {
-                ProgressView()
-                    .controlSize(.mini)
+                AttachmentDownloadIndicator(state: record?.state ?? .queued)
+                    .frame(width: 30, height: 30)
             }
         }
-        .frame(width: 44, height: 44)
-        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .frame(width: 90, height: 74)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .stroke(item.isPotentialParasite ? Color.red : Color.primary.opacity(0.12), lineWidth: item.isPotentialParasite ? 2 : 1)
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(
+                    candidate.isPotentialParasite ? Color.red : Color.primary.opacity(0.12),
+                    lineWidth: candidate.isPotentialParasite ? 2 : 1
+                )
         )
-        .help(item.displayName)
-        .task(id: item.cachedURL) {
-            image = await GalleryThumbnailService.thumbnail(
-                at: item.cachedURL,
-                kind: item.kind,
-                maximumDimension: 160
-            ).image
+        .help(candidate.attachmentName)
+        .task(id: thumbnailURL) {
+            guard let thumbnailURL else {
+                image = nil
+                return
+            }
+            image = NSImage(contentsOf: thumbnailURL)
         }
     }
 }

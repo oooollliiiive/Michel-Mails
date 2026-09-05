@@ -32,12 +32,17 @@ Le MVP comprend :
 - un interrupteur `Force Scan`, remis sur `OFF` à chaque lancement, qui utilise de gros lots, des délais très courts et ignore rapidement les emails trop lents lorsqu’il est activé ;
 - une reprise immédiate depuis le dernier curseur enregistré, sans attendre le recomptage complet de toutes les boîtes Mail ;
 - un superviseur permanent : base locale indisponible, fichier absent ou email invalide déclenchent respectivement reconnexion ou passage au suivant, sans terminer le scan ;
-- une liste compacte de résultats affichée directement dans Michel Mails, avec ouverture individuelle dans Mail ;
+- une liste compacte de résultats affichée directement dans Michel Mails, avec trombone, grandes vignettes des images jointes et ouverture individuelle dans Mail ;
 - la détection des images jointes en excluant les petits logos, les bannières et les éléments de signature ;
+- des interrupteurs pour contrôler l’affichage des images parasites et des emails classés Junk ;
 - une grille universelle inspirée de Michel OS pour les images, PDF, documents, tableurs, présentations, archives, fichiers audio et vidéo ;
 - des vignettes non bloquantes pour les formats d’image reconnus par macOS, la première page des PDF et les vidéos, avec le nom et la date du fichier ;
 - le glisser-déposer des fichiers vers le Finder ou une autre application ;
 - le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
+- une file de téléchargements parallèle et résiliente, toujours priorisée du fichier le plus récent au plus ancien ;
+- des vignettes persistantes conservées indépendamment des originaux et réutilisées aux lancements suivants ;
+- le refus systématique des fichiers vides ou incomplets avant toute copie ;
+- une fenêtre `Downloads` consultable à la demande et une destination commune `Desktop/Files from Mails`, directement visible par Michel OS ;
 - une confirmation avant de copier des images dans un dossier ;
 - le stockage local de la clé API dans un fichier privé accessible uniquement à l’utilisateur ;
 - la migration automatique de l’ancienne entrée du trousseau afin d’éviter une demande de mot de passe après chaque compilation locale.
@@ -74,9 +79,9 @@ swift test
 1. Ouvrir `Michel Mails.app`.
 2. Ajouter facultativement une clé API OpenAI, puis choisir `AI Interpretation` ON ou OFF.
 3. Ajouter `/Applications/Michel Mails.app` dans Réglages Système › Confidentialité et sécurité › Accès complet au disque, puis rouvrir l’application.
-4. Accepter l’autorisation d’automatiser Mail seulement lors de la première utilisation de `Open in Mail`.
+4. Accepter l’autorisation d’automatiser Mail lors de la première utilisation de `Open in Mail` ou du téléchargement d’une pièce jointe absente du stockage local.
 
-Michel Mails n’a pas besoin de l’autorisation Accessibilité. L’index et les fichiers locaux de Mail sont ouverts uniquement en lecture. Mail ne devient visible que lorsque l’utilisateur choisit explicitement `Open in Mail`.
+Michel Mails n’a pas besoin de l’autorisation Accessibilité. L’index et les fichiers locaux de Mail sont ouverts uniquement en lecture. Mail ne devient visible que lorsque l’utilisateur choisit explicitement `Open in Mail`; un téléchargement manquant peut solliciter Mail en arrière-plan sans ouvrir sa fenêtre.
 
 ## Exemples
 

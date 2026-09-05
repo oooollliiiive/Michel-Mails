@@ -4,7 +4,9 @@ import SwiftUI
 struct MailImageGalleryView: View {
     let gallery: MailImageGallery
     @ObservedObject var indexController: MailIndexController
+    @ObservedObject var downloadManager: AttachmentDownloadManager
     @Binding var showParasiteImages: Bool
+    @Binding var showJunkImages: Bool
     let onOpenEmail: (MailMessageItem) -> Void
     let onClose: () -> Void
 
@@ -19,7 +21,6 @@ struct MailImageGalleryView: View {
     private let cardHeight: CGFloat = 156
     private let gridSpacing: CGFloat = 8
     private let gridPadding: CGFloat = 12
-    private let selectionControlWidth: CGFloat = 118
 
     private var selectedItems: [MailImageItem] {
         gallery.items.filter { selectedIDs.contains($0.id) }
@@ -163,6 +164,18 @@ struct MailImageGalleryView: View {
                 .controlSize(.mini)
                 .help("Show suspected signatures, logos, icons, and tracking images. They are outlined in red.")
 
+            Text("Junk")
+                .font(.system(size: 11.5, weight: .semibold))
+            Text(showJunkImages ? "ON" : "OFF")
+                .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                .foregroundStyle(showJunkImages ? Color.orange : Color.secondary)
+                .frame(width: 24, alignment: .trailing)
+            Toggle("Junk", isOn: $showJunkImages)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Include images from Junk and Spam mailboxes.")
+
             Divider()
                 .frame(height: 20)
 
@@ -229,7 +242,8 @@ struct MailImageGalleryView: View {
             Text(selectedIDs.count == 1 ? "1 file" : "\(selectedIDs.count) files")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(Color.accentColor)
-                .frame(width: selectionControlWidth, height: 30)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7)
@@ -240,7 +254,8 @@ struct MailImageGalleryView: View {
                 Text("Save to Desktop")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: selectionControlWidth, height: 30)
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
@@ -252,7 +267,8 @@ struct MailImageGalleryView: View {
                     Text("Open in Mail")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: selectionControlWidth, height: 30)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
                         .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
@@ -287,7 +303,7 @@ struct MailImageGalleryView: View {
         let selected = selectedIDs.contains(item.id)
         return VStack(alignment: .leading, spacing: 0) {
             ZStack {
-                GalleryThumbnail(item: item)
+                GalleryThumbnail(item: item, downloadManager: downloadManager)
                     .frame(maxWidth: .infinity)
                     .frame(height: 156)
                     .background(Color(nsColor: .controlBackgroundColor))
@@ -365,14 +381,21 @@ struct MailImageGalleryView: View {
             toggle(item)
         }
         .onTapGesture(count: 2) {
-            NSWorkspace.shared.open(item.cachedURL)
+            openFile(item)
         }
         .onDrag {
-            NSItemProvider(contentsOf: item.cachedURL) ?? NSItemProvider()
+            guard hasCompleteOriginal(item) else {
+                if let candidate = item.sourceCandidate {
+                    downloadManager.downloadAttachmentsToDesktop([candidate])
+                    showTransientMessage("Download queued in Files from Mails.")
+                }
+                return NSItemProvider()
+            }
+            return NSItemProvider(contentsOf: item.cachedURL) ?? NSItemProvider()
         }
         .contextMenu {
             Button("Open File") {
-                NSWorkspace.shared.open(item.cachedURL)
+                openFile(item)
             }
             Button("Open in Email") {
                 onOpenEmail(item.message)
@@ -381,7 +404,7 @@ struct MailImageGalleryView: View {
             Button("Copy File") {
                 copy([item])
             }
-            Button("Save This File…") {
+            Button("Save to Desktop") {
                 saveSingle(item)
             }
         }
@@ -406,37 +429,57 @@ struct MailImageGalleryView: View {
 
     private func saveSelectedToDesktop() {
         let items = selectedItems
-        guard !items.isEmpty,
-              let desktop = FileManager.default.urls(
-                  for: .desktopDirectory,
-                  in: .userDomainMask
-              ).first else {
-            showTransientMessage("The Desktop folder is unavailable.")
+        guard !items.isEmpty else { return }
+        let candidates = items.compactMap(\.sourceCandidate)
+        if !candidates.isEmpty {
+            downloadManager.downloadAttachmentsToDesktop(candidates)
+            showTransientMessage(
+                candidates.count == 1
+                    ? "Download queued in Desktop/Files from Mails."
+                    : "\(candidates.count) downloads queued in Desktop/Files from Mails."
+            )
             return
         }
 
+        guard let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first else {
+            showTransientMessage("The Desktop folder is unavailable.")
+            return
+        }
+        let destination = desktop.appendingPathComponent("Files from Mails", isDirectory: true)
+
         Task {
             do {
+                try FileManager.default.createDirectory(
+                    at: destination,
+                    withIntermediateDirectories: true
+                )
                 let result = try await Task.detached(priority: .userInitiated) {
-                    try DesktopFileSaver.save(items, to: desktop)
+                    try DesktopFileSaver.save(items, to: destination)
                 }.value
                 let savedCount = result.savedURLs.count
                 let duplicateCount = result.duplicateCount
+                let incompleteCount = result.incompleteCount
+                if incompleteCount > 0 {
+                    showTransientMessage("Incomplete files were skipped.")
+                    return
+                }
                 if savedCount == 0 && duplicateCount == 1 {
-                    showTransientMessage("Already on Desktop — nothing copied.")
+                    showTransientMessage("Already in Files from Mails — nothing copied.")
                 } else if savedCount == 0 {
-                    showTransientMessage("\(duplicateCount) files are already on Desktop — nothing copied.")
+                    showTransientMessage("\(duplicateCount) files are already in Files from Mails.")
                 } else if duplicateCount > 0 {
                     showTransientMessage(
-                        "\(savedCount) saved to Desktop · \(duplicateCount) already there."
+                        "\(savedCount) saved · \(duplicateCount) already in Files from Mails."
                     )
                 } else {
                     showTransientMessage(
-                        savedCount == 1 ? "Saved to Desktop." : "\(savedCount) files saved to Desktop."
+                        savedCount == 1
+                            ? "Saved in Desktop/Files from Mails."
+                            : "\(savedCount) files saved in Desktop/Files from Mails."
                     )
                 }
             } catch {
-                showTransientMessage("Could not save to Desktop.")
+                showTransientMessage("Could not save in Files from Mails.")
             }
         }
     }
@@ -457,6 +500,15 @@ struct MailImageGalleryView: View {
 
     private func copy(_ items: [MailImageItem]) {
         guard !items.isEmpty else { return }
+        let unavailable = items.filter {
+            !hasCompleteOriginal($0)
+        }
+        if !unavailable.isEmpty {
+            let candidates = unavailable.compactMap(\.sourceCandidate)
+            downloadManager.downloadAttachmentsToDesktop(candidates)
+            statusMessage = "Original file unavailable · download queued in Files from Mails"
+            return
+        }
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -484,23 +536,30 @@ struct MailImageGalleryView: View {
     }
 
     private func saveSingle(_ item: MailImageItem) {
-        let panel = NSSavePanel()
-        panel.title = "Save File"
-        panel.prompt = "Save"
-        panel.nameFieldStringValue = item.displayName
-
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-
-        do {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.copyItem(at: item.cachedURL, to: destination)
-            statusMessage = "File saved: \(destination.lastPathComponent)"
-            NSWorkspace.shared.activateFileViewerSelecting([destination])
-        } catch {
-            statusMessage = "Could not save the file."
+        if let candidate = item.sourceCandidate {
+            downloadManager.downloadAttachmentsToDesktop([candidate])
+            showTransientMessage("Download queued in Desktop/Files from Mails.")
+            return
         }
+        saveSelectedToDesktop()
+    }
+
+    private func openFile(_ item: MailImageItem) {
+        if hasCompleteOriginal(item) {
+            NSWorkspace.shared.open(item.cachedURL)
+        } else if let candidate = item.sourceCandidate {
+            downloadManager.openAttachment(candidate)
+            showTransientMessage("Downloading the original file…")
+        }
+    }
+
+    private func hasCompleteOriginal(_ item: MailImageItem) -> Bool {
+        guard item.hasOriginalFile,
+              FileManager.default.fileExists(atPath: item.cachedURL.path),
+              let size = try? item.cachedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size > 0 else { return false }
+        guard let candidate = item.sourceCandidate else { return true }
+        return AttachmentMaterializer.isCompleteFile(at: item.cachedURL, candidate: candidate)
     }
 
     private func displayDate(_ date: Date?) -> String {
@@ -540,8 +599,25 @@ private struct GalleryCardFramePreferenceKey: PreferenceKey {
 
 private struct GalleryThumbnail: View {
     let item: MailImageItem
+    @ObservedObject var downloadManager: AttachmentDownloadManager
     @State private var image: NSImage?
     @State private var isFallback = false
+
+    private var candidate: IndexedMailAttachmentCandidate? {
+        item.sourceCandidate
+    }
+
+    private var record: AttachmentTransferRecord? {
+        candidate.flatMap(downloadManager.record)
+    }
+
+    private var displayURL: URL? {
+        if item.hasOriginalFile,
+           FileManager.default.fileExists(atPath: item.cachedURL.path) {
+            return item.cachedURL
+        }
+        return candidate.flatMap(downloadManager.thumbnailURL)
+    }
 
     var body: some View {
         Group {
@@ -570,23 +646,41 @@ private struct GalleryThumbnail: View {
                         }
                     }
                 }
+            } else if record?.state == .failed, let candidate {
+                Button {
+                    downloadManager.retry(candidate)
+                } label: {
+                    VStack(spacing: 7) {
+                        Image(systemName: "arrow.clockwise.circle")
+                            .font(.system(size: 27, weight: .semibold))
+                        Text("Retry download")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
             } else {
                 VStack(spacing: 7) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Preparing preview…")
+                    AttachmentDownloadIndicator(state: record?.state ?? .queued)
+                        .frame(width: 34, height: 34)
+                    Text(record?.state == .downloading ? "Downloading…" : "Waiting to download…")
                         .font(.caption2)
                 }
                 .foregroundStyle(.secondary)
             }
         }
-        .task(id: item.cachedURL) {
+        .task(id: displayURL) {
+            guard let displayURL else {
+                image = nil
+                isFallback = false
+                return
+            }
             let result = await GalleryThumbnailService.thumbnail(
-                at: item.cachedURL,
+                at: displayURL,
                 kind: item.kind,
                 maximumDimension: 512
             )
-            image = result.image
+            image = result.isFallback && item.kind == .image ? nil : result.image
             isFallback = result.isFallback
         }
     }

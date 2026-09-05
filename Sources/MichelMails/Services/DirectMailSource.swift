@@ -97,8 +97,16 @@ actor DirectMailSource {
                     messageRowID: sourceRow.rowID,
                     emlxURL: emlxURL
                 )
-                var attachments = parsed.attachments.map {
-                    Self.indexedAttachment($0, sourcePath: "")
+                var attachments = parsed.attachments.enumerated().map { index, attachment in
+                    Self.indexedAttachment(
+                        DirectEmlxAttachment(
+                            identifier: "index-\(index + 1)",
+                            name: attachment.name,
+                            MIMEType: attachment.MIMEType,
+                            sizeBytes: attachment.sizeBytes
+                        ),
+                        sourcePath: ""
+                    )
                 }
                 if !externalFiles.isEmpty {
                     let externalNames = Set(externalFiles.map { $0.name.lowercased() })

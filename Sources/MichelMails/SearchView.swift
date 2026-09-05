@@ -3,6 +3,7 @@ import SwiftUI
 struct SearchView: View {
     @ObservedObject var viewModel: SearchViewModel
     @ObservedObject var indexController: MailIndexController
+    @ObservedObject var downloadManager: AttachmentDownloadManager
     @FocusState private var promptIsFocused: Bool
     @State private var latestImageCount = 20
     @State private var imageDirection: MailDirection = .any
@@ -75,6 +76,22 @@ struct SearchView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Settings")
+
+                Button(action: viewModel.showDownloads) {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 26, height: 26)
+                        if downloadManager.activeCount > 0 || downloadManager.queuedCount > 0 {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(width: 7, height: 7)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Show Downloads")
             }
 
             if viewModel.historyIsVisible {
@@ -198,9 +215,14 @@ struct SearchView: View {
                 MailImageGalleryView(
                     gallery: gallery,
                     indexController: indexController,
+                    downloadManager: downloadManager,
                     showParasiteImages: Binding(
                         get: { viewModel.showParasiteImages },
                         set: viewModel.setShowParasiteImages
+                    ),
+                    showJunkImages: Binding(
+                        get: { viewModel.showJunkImages },
+                        set: viewModel.setShowJunkImages
                     ),
                     onOpenEmail: viewModel.openMessage,
                     onClose: viewModel.closeGallery
@@ -212,7 +234,9 @@ struct SearchView: View {
                 MailSearchResultsView(
                     results: results,
                     indexController: indexController,
+                    downloadManager: downloadManager,
                     onOpenEmail: viewModel.openMessage,
+                    onDownloadAttachments: viewModel.downloadAttachments,
                     onClose: viewModel.closeResults
                 )
                 .id(results.id)

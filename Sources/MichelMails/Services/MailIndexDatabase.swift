@@ -471,16 +471,17 @@ actor MailIndexDatabase {
             }
         }
 
-        let imageAttachments = try imageAttachments(forMessageKeys: messageKeys)
+        let attachments = try attachments(forMessageKeys: messageKeys)
         for index in items.indices {
-            items[index].imageAttachments = imageAttachments[messageKeys[index]] ?? []
+            items[index].attachments = attachments[messageKeys[index]] ?? []
         }
         return MailSearchResults(items: items, query: query)
     }
 
     func searchAttachments(
         _ query: MailQuery,
-        includePotentialParasites: Bool = false
+        includePotentialParasites: Bool = false,
+        includeJunk: Bool = false
     ) throws -> [IndexedMailAttachmentCandidate] {
         var conditions: [String] = ["a.size_bytes >= 0"]
         var bindings: [Binding] = []
@@ -518,7 +519,7 @@ actor MailIndexDatabase {
         if !includePotentialParasites && (query.hasImage || requestedKinds == [.image]) {
             conditions.append("a.is_useful_image = 1")
         }
-        if query.hasImage || requestedKinds.contains(.image) {
+        if !includeJunk && (query.hasImage || requestedKinds.contains(.image)) {
             conditions.append(Self.nonJunkMailboxCondition)
         }
 
@@ -568,15 +569,17 @@ actor MailIndexDatabase {
         targetCount: Int,
         direction: MailDirection,
         correspondent: String,
-        includePotentialParasites: Bool = false
+        includePotentialParasites: Bool = false,
+        includeJunk: Bool = false
     ) throws -> [IndexedMailAttachmentCandidate] {
         var conditions = [
-            "a.kind = 'image'",
-            "(a.source_path <> '' OR m.source_path <> '')",
-            Self.nonJunkMailboxCondition
+            "a.kind = 'image'"
         ]
         if !includePotentialParasites {
             conditions.append("a.is_useful_image = 1")
+        }
+        if !includeJunk {
+            conditions.append(Self.nonJunkMailboxCondition)
         }
         var bindings: [Binding] = []
 
@@ -632,35 +635,39 @@ actor MailIndexDatabase {
         return result
     }
 
-    private func imageAttachments(
+    private func attachments(
         forMessageKeys messageKeys: [String]
     ) throws -> [String: [IndexedMailAttachmentCandidate]] {
         guard !messageKeys.isEmpty else { return [:] }
-        let placeholders = Array(repeating: "?", count: messageKeys.count).joined(separator: ", ")
-        let SQL = """
-        SELECT m.message_key,
-               m.message_identifier, m.local_identifier, m.sender, m.subject,
-               substr(m.body, 1, 240), m.received_at, m.account_name, m.mailbox_name,
-               m.source_path, a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind,
-               CASE WHEN a.source_path <> '' THEN a.source_path ELSE m.source_path END,
-               a.is_useful_image
-        FROM attachments a
-        JOIN messages m ON m.message_key = a.message_key
-        WHERE a.message_key IN (\(placeholders))
-          AND a.kind = 'image'
-        ORDER BY a.attachment_key ASC
-        """
-        guard let statement = try prepare(SQL) else {
-            throw MichelMailsError.index("Email image previews could not be prepared.")
-        }
-        defer { sqlite3_finalize(statement) }
-        try bind(messageKeys.map(Binding.text), to: statement)
-
         var result: [String: [IndexedMailAttachmentCandidate]] = [:]
-        while sqlite3_step(statement) == SQLITE_ROW {
-            result[Self.text(at: 0, in: statement), default: []].append(
-                Self.attachmentCandidate(from: statement, offset: 1)
-            )
+        for start in stride(from: 0, to: messageKeys.count, by: 500) {
+            let end = min(start + 500, messageKeys.count)
+            let chunk = Array(messageKeys[start..<end])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
+            let SQL = """
+            SELECT m.message_key,
+                   m.message_identifier, m.local_identifier, m.sender, m.subject,
+                   substr(m.body, 1, 240), m.received_at, m.account_name, m.mailbox_name,
+                   m.source_path, a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind,
+                   CASE WHEN a.source_path <> '' THEN a.source_path ELSE m.source_path END,
+                   a.is_useful_image
+            FROM attachments a
+            JOIN messages m ON m.message_key = a.message_key
+            WHERE a.message_key IN (\(placeholders))
+            ORDER BY a.attachment_key ASC
+            """
+            guard let statement = try prepare(SQL) else {
+                throw MichelMailsError.index("Email attachment previews could not be prepared.")
+            }
+            do {
+                defer { sqlite3_finalize(statement) }
+                try bind(chunk.map(Binding.text), to: statement)
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    result[Self.text(at: 0, in: statement), default: []].append(
+                        Self.attachmentCandidate(from: statement, offset: 1)
+                    )
+                }
+            }
         }
         return result
     }

@@ -114,14 +114,17 @@ struct MailMessageItem: Identifiable, Equatable, Sendable {
     let preview: String
     let receivedAt: Date?
     var hasAttachment = false
-    var imageAttachments: [IndexedMailAttachmentCandidate] = []
+    var attachments: [IndexedMailAttachmentCandidate] = []
+
+    var imageAttachments: [IndexedMailAttachmentCandidate] {
+        attachments.filter { $0.kind == .image }
+    }
 }
 
 struct MailSearchResults: Identifiable, Equatable, Sendable {
     let id = UUID()
     let items: [MailMessageItem]
     let query: MailQuery
-    var imagePreviews: [MailImageItem] = []
 }
 
 struct MailImageItem: Identifiable, Equatable, Sendable {
@@ -131,7 +134,28 @@ struct MailImageItem: Identifiable, Equatable, Sendable {
     let MIMEType: String
     let kind: MailAttachmentKind
     let message: MailMessageItem
+    var sourceCandidate: IndexedMailAttachmentCandidate?
+    var hasOriginalFile = true
     var isPotentialParasite = false
+}
+
+enum AttachmentTransferState: String, Equatable, Sendable {
+    case queued
+    case downloading
+    case ready
+    case failed
+}
+
+struct AttachmentTransferRecord: Identifiable, Equatable, Sendable {
+    var id: String { candidate.stableKey }
+    var candidate: IndexedMailAttachmentCandidate
+    var state: AttachmentTransferState
+    var thumbnailURL: URL?
+    var exportedURL: URL?
+    var needsThumbnail: Bool
+    var needsExport: Bool
+    var openWhenReady = false
+    var errorMessage: String?
 }
 
 struct MailImageGallery: Identifiable, Equatable, Sendable {

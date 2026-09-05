@@ -15,14 +15,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let historySpacing: CGFloat = 12
 
     private var panel: PromptPanel?
+    private var downloadsWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private let indexController: MailIndexController
+    private let downloadManager: AttachmentDownloadManager
     private let viewModel: SearchViewModel
 
     override init() {
         let indexController = MailIndexController()
+        let downloadManager = AttachmentDownloadManager()
         self.indexController = indexController
-        self.viewModel = SearchViewModel(indexController: indexController)
+        self.downloadManager = downloadManager
+        self.viewModel = SearchViewModel(
+            indexController: indexController,
+            downloadManager: downloadManager
+        )
         super.init()
     }
 
@@ -33,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         viewModel.onHistorySuggestionsChanged = { [weak self] count in
             self?.resizePromptPanel(forHistoryCount: count)
+        }
+        viewModel.onShowDownloads = { [weak self] in
+            self?.showDownloads()
         }
         configureStatusItem()
         showPrompt()
@@ -66,6 +76,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func showDownloads() {
+        let window: NSWindow
+        if let downloadsWindow {
+            window = downloadsWindow
+        } else {
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Downloads"
+            window.minSize = NSSize(width: 620, height: 420)
+            window.isReleasedWhenClosed = false
+            window.level = .normal
+            window.contentView = NSHostingView(
+                rootView: DownloadsView(manager: downloadManager)
+            )
+            if !window.setFrameUsingName("MichelMailsDownloadsWindow") {
+                window.center()
+            }
+            window.setFrameAutosaveName("MichelMailsDownloadsWindow")
+            downloadsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func makePanel() -> PromptPanel {
@@ -107,7 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.standardWindowButton(.zoomButton)?.isEnabled = false
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = false
         panel.contentView = NSHostingView(
-            rootView: SearchView(viewModel: viewModel, indexController: indexController)
+            rootView: SearchView(
+                viewModel: viewModel,
+                indexController: indexController,
+                downloadManager: downloadManager
+            )
         )
 
         if !panel.setFrameUsingName("MichelMailsPromptWindow") {
@@ -209,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let menu = NSMenu()
         menu.addItem(withTitle: "Show Michel Mails", action: #selector(showPrompt), keyEquivalent: "m")
+        menu.addItem(withTitle: "Downloads", action: #selector(showDownloads), keyEquivalent: "d")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
         item.menu = menu

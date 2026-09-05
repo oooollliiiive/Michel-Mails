@@ -109,3 +109,101 @@ func desktopDuplicateDetection() throws {
         )
     )
 }
+
+@Test("Incomplete zero-byte attachments are never copied")
+func incompleteAttachmentIsSkipped() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceDirectory = root.appendingPathComponent("Source", isDirectory: true)
+    let destinationDirectory = root.appendingPathComponent("Desktop", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sourceURL = sourceDirectory.appendingPathComponent("empty.jpg")
+    try Data().write(to: sourceURL)
+    let item = MailImageItem(
+        cachedURL: sourceURL,
+        displayName: "empty.jpg",
+        MIMEType: "image/jpeg",
+        kind: .image,
+        message: MailMessageItem(
+            reference: MailMessageReference(messageIdentifier: "empty", localIdentifier: "1"),
+            sender: "Michel",
+            subject: "Empty attachment",
+            preview: "",
+            receivedAt: nil
+        )
+    )
+
+    let result = try DesktopFileSaver.save([item], to: destinationDirectory)
+    #expect(result.savedURLs.isEmpty)
+    #expect(result.duplicateCount == 0)
+    #expect(result.incompleteCount == 1)
+    #expect(!FileManager.default.fileExists(
+        atPath: destinationDirectory.appendingPathComponent("empty.jpg").path
+    ))
+}
+
+@Test("Grid thumbnails persist independently from original attachments")
+@MainActor
+func persistentAttachmentThumbnail() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sourceURL = root.appendingPathComponent("source.png")
+    let bitmap = try #require(NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: 32,
+        pixelsHigh: 24,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ))
+    let data = try #require(bitmap.representation(using: .png, properties: [:]))
+    try data.write(to: sourceURL)
+
+    let candidate = IndexedMailAttachmentCandidate(
+        messageIdentifier: "thumbnail-message",
+        localIdentifier: "42",
+        sender: "Raffi",
+        subject: "Picture",
+        preview: "",
+        receivedAt: Date(timeIntervalSince1970: 1_750_000_000),
+        accountName: "Google",
+        mailboxName: "Inbox",
+        attachmentIdentifier: "image-1",
+        attachmentName: "source.png",
+        MIMEType: "image/png",
+        sizeBytes: Int64(data.count),
+        kind: .image,
+        sourcePath: sourceURL.path
+    )
+    let thumbnailRoot = root.appendingPathComponent("Thumbnails", isDirectory: true)
+    let thumbnailURL = await PersistentThumbnailStore.createThumbnail(
+        from: sourceURL,
+        candidate: candidate,
+        rootDirectory: thumbnailRoot
+    )
+
+    #expect(thumbnailURL != nil)
+    #expect(PersistentThumbnailStore.existingThumbnailURL(
+        for: candidate,
+        rootDirectory: thumbnailRoot
+    ) == thumbnailURL)
+    #expect(AttachmentMaterializer.isCompleteFile(at: sourceURL, candidate: candidate))
+
+    let materializedURL = root.appendingPathComponent("materialized.png")
+    try await AttachmentMaterializer.materialize(
+        candidate,
+        to: materializedURL,
+        allowMailDownload: false
+    )
+    #expect(try Data(contentsOf: materializedURL) == data)
+}

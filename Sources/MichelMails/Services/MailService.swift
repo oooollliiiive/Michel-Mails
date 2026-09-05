@@ -69,20 +69,40 @@ final class MailService {
                         let targetURL = cacheDirectory.appendingPathComponent(
                             Self.cacheFileName(for: candidate, position: offset + 1)
                         )
-                        guard await Self.extract(candidate, to: targetURL) else {
-                            return (offset, nil)
+                        let persistentThumbnail = PersistentThumbnailStore.existingThumbnailURL(
+                            for: candidate
+                        )
+                        var hasOriginalFile = false
+                        var displayURL = persistentThumbnail ?? targetURL
+                        if persistentThumbnail == nil {
+                            do {
+                                try await AttachmentMaterializer.materialize(
+                                    candidate,
+                                    to: targetURL,
+                                    allowMailDownload: false
+                                )
+                                hasOriginalFile = true
+                                displayURL = targetURL
+                            } catch {
+                                // Keep an explicit queued item. The download manager
+                                // will replace its progress circle with a thumbnail.
+                            }
                         }
                         var item = MailImageItem(
-                            cachedURL: targetURL,
+                            cachedURL: displayURL,
                             displayName: candidate.attachmentName.isEmpty
                                 ? "Untitled file"
                                 : candidate.attachmentName,
                             MIMEType: candidate.MIMEType,
                             kind: candidate.kind,
-                            message: candidate.message
+                            message: candidate.message,
+                            sourceCandidate: candidate,
+                            hasOriginalFile: hasOriginalFile
                         )
                         if item.kind == .image {
-                            let looksLikeUsefulImage = Self.isUsefulVisualAttachment(at: targetURL)
+                            let looksLikeUsefulImage = persistentThumbnail == nil && !hasOriginalFile
+                                ? true
+                                : Self.isUsefulVisualAttachment(at: displayURL)
                             item.isPotentialParasite = candidate.isPotentialParasite || !looksLikeUsefulImage
                             guard includePotentialParasites || !item.isPotentialParasite else {
                                 return (offset, nil)
@@ -114,9 +134,16 @@ final class MailService {
             let requestedName = candidate.attachmentName.isEmpty ? "Untitled file" : candidate.attachmentName
             let proposedURL = destination.appendingPathComponent(requestedName)
             let targetURL = availableURL(for: proposedURL, position: offset + 1)
-            if await Self.extract(candidate, to: targetURL) {
+            do {
+                try await AttachmentMaterializer.materialize(
+                    candidate,
+                    to: targetURL,
+                    allowMailDownload: true
+                )
                 copiedCount += 1
                 messageKeys.insert(candidate.messageIdentifier + "|" + candidate.localIdentifier)
+            } catch {
+                try? FileManager.default.removeItem(at: targetURL)
             }
         }
         return MailMatchSummary(messageCount: messageKeys.count, imageCount: copiedCount)
@@ -189,34 +216,6 @@ final class MailService {
             return nil
         }
         return URL(string: "message://\(encoded)")
-    }
-
-    private nonisolated static func extract(
-        _ candidate: IndexedMailAttachmentCandidate,
-        to destination: URL
-    ) async -> Bool {
-        await Task.detached(priority: .userInitiated) {
-            guard !candidate.sourcePath.isEmpty else { return false }
-            let sourceURL = URL(fileURLWithPath: candidate.sourcePath)
-            do {
-                let lowerName = sourceURL.lastPathComponent.lowercased()
-                if candidate.attachmentIdentifier == "file" ||
-                    (!lowerName.hasSuffix(".emlx") && !lowerName.hasSuffix(".partial.emlx")) {
-                    try FileManager.default.copyItem(at: sourceURL, to: destination)
-                } else {
-                    guard let data = try DirectEmlxReader.extractAttachment(
-                        identifier: candidate.attachmentIdentifier,
-                        preferredName: candidate.attachmentName,
-                        from: sourceURL
-                    ) else { return false }
-                    try data.write(to: destination, options: .atomic)
-                }
-                return FileManager.default.fileExists(atPath: destination.path)
-            } catch {
-                // Missing or malformed local attachments never block the other results.
-                return false
-            }
-        }.value
     }
 
     private static func cacheFileName(
@@ -411,104 +410,6 @@ final class MailService {
             end try
         end tell
     end openFoundMessage
-
-    on flattenedMailboxes(aContainer)
-        set collectedMailboxes to {}
-        tell application "Mail"
-            try
-                repeat with aMailbox in every mailbox of aContainer
-                    set end of collectedMailboxes to contents of aMailbox
-                    try
-                        set collectedMailboxes to collectedMailboxes & my flattenedMailboxes(contents of aMailbox)
-                    end try
-                end repeat
-            end try
-        end tell
-        return collectedMailboxes
-    end flattenedMailboxes
-    """#
-
-    private static let backgroundAttachmentScript = #"""
-    on run argv
-        tell application "Mail" to launch
-        set targetAccountName to item 1 of argv
-        set targetMailboxName to item 2 of argv
-        set targetMessageIdentifier to item 3 of argv
-        set targetLocalIdentifier to item 4 of argv
-        set targetAttachmentIdentifier to item 5 of argv
-        set targetAttachmentName to item 6 of argv
-        set destinationPath to item 7 of argv
-
-        tell application "Mail"
-            set accountCandidates to every account
-            repeat with anAccount in accountCandidates
-                set accountMatches to targetAccountName is ""
-                try
-                    set accountMatches to accountMatches or ((name of anAccount as text) is targetAccountName)
-                end try
-                if accountMatches then
-                    set mailboxCandidates to my flattenedMailboxes(contents of anAccount)
-                    repeat with aMailbox in mailboxCandidates
-                        set mailboxMatches to targetMailboxName is ""
-                        try
-                            set mailboxMatches to mailboxMatches or ((name of aMailbox as text) is targetMailboxName)
-                        end try
-                        if mailboxMatches and my saveMatchingAttachment(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath) then return "1"
-                    end repeat
-                end if
-            end repeat
-
-            -- The message may have moved since it was indexed. Fall back to all
-            -- mailboxes without ever activating Mail or opening a viewer.
-            repeat with anAccount in accountCandidates
-                set mailboxCandidates to my flattenedMailboxes(contents of anAccount)
-                repeat with aMailbox in mailboxCandidates
-                    if my saveMatchingAttachment(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath) then return "1"
-                end repeat
-            end repeat
-        end tell
-        return "0"
-    end run
-
-    on saveMatchingAttachment(aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
-        tell application "Mail"
-            set messageCandidates to {}
-            if targetLocalIdentifier is not "" then
-                try
-                    set localNumber to targetLocalIdentifier as integer
-                    set messageCandidates to every message of aMailbox whose id is localNumber
-                end try
-            end if
-            if (count of messageCandidates) is 0 and targetMessageIdentifier is not "" then
-                try
-                    set messageCandidates to every message of aMailbox whose message id is targetMessageIdentifier
-                end try
-            end if
-
-            repeat with aMessage in messageCandidates
-                try
-                    repeat with anAttachment in every mail attachment of aMessage
-                        set attachmentMatches to false
-                        if targetAttachmentIdentifier is not "" then
-                            try
-                                set attachmentMatches to (id of anAttachment as text) is targetAttachmentIdentifier
-                            end try
-                        end if
-                        if not attachmentMatches and targetAttachmentName is not "" then
-                            try
-                                set attachmentMatches to (name of anAttachment as text) is targetAttachmentName
-                            end try
-                        end if
-                        if attachmentMatches then
-                            save anAttachment in POSIX file destinationPath
-                            return true
-                        end if
-                    end repeat
-                end try
-            end repeat
-        end tell
-        return false
-    end saveMatchingAttachment
 
     on flattenedMailboxes(aContainer)
         set collectedMailboxes to {}

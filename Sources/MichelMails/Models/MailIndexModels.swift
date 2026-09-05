@@ -79,6 +79,13 @@ struct IndexedMailAttachmentCandidate: Equatable, Sendable {
     var sourcePath: String = ""
     var isPotentialParasite = false
 
+    var stableKey: String {
+        let messageKey = messageIdentifier.isEmpty
+            ? "local:\(accountName):\(localIdentifier)"
+            : "message:\(messageIdentifier)"
+        return "\(messageKey)|\(attachmentIdentifier)|\(attachmentName)"
+    }
+
     var message: MailMessageItem {
         MailMessageItem(
             reference: MailMessageReference(
@@ -92,7 +99,8 @@ struct IndexedMailAttachmentCandidate: Equatable, Sendable {
             subject: subject.isEmpty ? "(No subject)" : subject,
             preview: preview,
             receivedAt: receivedAt,
-            hasAttachment: true
+            hasAttachment: true,
+            attachments: [self]
         )
     }
 }

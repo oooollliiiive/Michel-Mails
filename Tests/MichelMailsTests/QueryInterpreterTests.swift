@@ -23,6 +23,15 @@ func openMessageScriptCompiles() throws {
     #expect(error == nil)
 }
 
+@Test("The background attachment download script compiles")
+@MainActor
+func attachmentDownloadScriptCompiles() throws {
+    let script = try #require(NSAppleScript(source: AttachmentMaterializer.downloadScript))
+    var error: NSDictionary?
+    #expect(script.compileAndReturnError(&error))
+    #expect(error == nil)
+}
+
 @Test("French copy prompt extracts sender, images, all results, and destination")
 func frenchPromptWithTypoAndImageCopy() {
     let query = LocalQueryInterpreter().interpret(
@@ -409,6 +418,12 @@ func latestImageShortcutSearch() async throws {
     })
     #expect(!resultsIncludingParasites.contains { $0.messageIdentifier == "junk" })
 
+    let resultsIncludingJunk = try await database.searchAttachments(
+        regularImageQuery,
+        includeJunk: true
+    )
+    #expect(resultsIncludingJunk.contains { $0.messageIdentifier == "junk" })
+
     let latestIncludingParasites = try await database.latestImageAttachments(
         targetCount: 4,
         direction: .received,
@@ -499,6 +514,7 @@ func partialLocalIndexSearch() async throws {
     )
     let PDFResults = try await database.searchMessages(query)
     #expect(PDFResults.items.map(\.reference.messageIdentifier) == ["old-message"])
+    #expect(PDFResults.items[0].attachments.map(\.attachmentName) == ["invoice.pdf"])
 
     var attachmentQuery = query
     attachmentQuery.action = .showFiles

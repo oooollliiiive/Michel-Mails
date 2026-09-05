@@ -16,13 +16,16 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var displayedGallery: MailImageGallery?
     @Published private(set) var displayedResults: MailSearchResults?
     @Published private(set) var showParasiteImages = false
+    @Published private(set) var showJunkImages = false
     @Published private(set) var imageCorrespondents: [String] = []
     var onContentVisibilityChanged: ((Bool) -> Void)?
     var onHistorySuggestionsChanged: ((Int) -> Void)?
+    var onShowDownloads: (() -> Void)?
 
     private let interpreter = AIQueryInterpreter()
     private let mailService = MailService()
     private let indexController: MailIndexController
+    let downloadManager: AttachmentDownloadManager
     private let historyDefaultsKey = "recentSearchPrompts"
     private let AIInterpretationDefaultsKey = "AIInterpretationEnabled"
     private var displayedGalleryRequest: DisplayedGalleryRequest?
@@ -32,8 +35,12 @@ final class SearchViewModel: ObservableObject {
         case query(MailQuery)
     }
 
-    init(indexController: MailIndexController) {
+    init(
+        indexController: MailIndexController,
+        downloadManager: AttachmentDownloadManager
+    ) {
         self.indexController = indexController
+        self.downloadManager = downloadManager
         let storedKey = KeychainStore.readAPIKey() ?? ""
         APIKeyDraft = storedKey
         modelDraft = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-5.4-mini"
@@ -168,7 +175,8 @@ final class SearchViewModel: ObservableObject {
                     targetCount: fetchCount,
                     direction: direction,
                     correspondent: correspondent,
-                    includePotentialParasites: showParasiteImages
+                    includePotentialParasites: showParasiteImages,
+                    includeJunk: showJunkImages
                 ) ?? []
                 var query = MailQuery()
                 query.action = .showImages
@@ -245,6 +253,32 @@ final class SearchViewModel: ObservableObject {
         case let .query(query):
             reloadGallery(query)
         }
+    }
+
+    func setShowJunkImages(_ enabled: Bool) {
+        showJunkImages = enabled
+        guard !isWorking, let request = displayedGalleryRequest else { return }
+        switch request {
+        case let .quick(count, direction, correspondent):
+            showLatestImages(count: count, direction: direction, correspondent: correspondent)
+        case let .query(query):
+            reloadGallery(query)
+        }
+    }
+
+    func showDownloads() {
+        onShowDownloads?()
+    }
+
+    func downloadAttachments(_ message: MailMessageItem) {
+        guard !message.attachments.isEmpty else {
+            statusText = "This email has no downloadable attachments."
+            return
+        }
+        downloadManager.downloadAttachmentsToDesktop(message.attachments)
+        statusText = message.attachments.count == 1
+            ? "1 attachment queued for Desktop/Files from Mails."
+            : "\(message.attachments.count) attachments queued for Desktop/Files from Mails."
     }
 
     func refreshImageCorrespondents() {
@@ -419,7 +453,8 @@ final class SearchViewModel: ObservableObject {
     ) async throws -> [IndexedMailAttachmentCandidate] {
         try await indexController.searchAttachments(
             query,
-            includePotentialParasites: showParasiteImages
+            includePotentialParasites: showParasiteImages,
+            includeJunk: showJunkImages
         ) ?? []
     }
 
@@ -463,6 +498,9 @@ final class SearchViewModel: ObservableObject {
         displayedResults = nil
         displayedGallery = gallery
         displayedGalleryRequest = request
+        downloadManager.prepareThumbnails(
+            gallery.items.compactMap(\.sourceCandidate)
+        )
         onContentVisibilityChanged?(true)
     }
 
@@ -470,29 +508,10 @@ final class SearchViewModel: ObservableObject {
         displayedGallery = nil
         displayedGalleryRequest = nil
         displayedResults = results
+        downloadManager.prepareThumbnails(
+            results.items.flatMap(\.imageAttachments)
+        )
         onContentVisibilityChanged?(true)
-        prepareEmailImagePreviews(for: results)
-    }
-
-    private func prepareEmailImagePreviews(for results: MailSearchResults) {
-        let candidates = results.items.flatMap(\.imageAttachments)
-        guard !candidates.isEmpty else { return }
-        Task {
-            var query = results.query
-            query.action = .showImages
-            query.hasImage = true
-            query.hasAttachment = true
-            query.attachmentKinds = [.image]
-            let gallery = try? await mailService.galleryImages(
-                query,
-                candidates: candidates,
-                includePotentialParasites: true
-            )
-            guard displayedResults?.id == results.id, let gallery else { return }
-            var updated = results
-            updated.imagePreviews = gallery.items
-            displayedResults = updated
-        }
     }
 
     private func reloadGallery(_ query: MailQuery) {

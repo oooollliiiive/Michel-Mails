@@ -3,6 +3,7 @@ import Foundation
 struct DesktopSaveResult: Equatable, Sendable {
     let savedURLs: [URL]
     let duplicateCount: Int
+    let incompleteCount: Int
 }
 
 enum DesktopFileSaver {
@@ -13,6 +14,7 @@ enum DesktopFileSaver {
         let manager = FileManager.default
         var savedURLs: [URL] = []
         var duplicateCount = 0
+        var incompleteCount = 0
 
         for item in items {
             let fileName = safeFileName(item.displayName)
@@ -21,6 +23,17 @@ enum DesktopFileSaver {
                 forKeys: [.fileSizeKey, .contentModificationDateKey]
             )
             let sourceSize = Int64(sourceValues.fileSize ?? 0)
+            guard item.hasOriginalFile,
+                  sourceSize > 0,
+                  item.sourceCandidate.map({ candidate in
+                      AttachmentMaterializer.isCompleteFile(
+                          at: item.cachedURL,
+                          candidate: candidate
+                      )
+                  }) ?? true else {
+                incompleteCount += 1
+                continue
+            }
             let referenceDate = item.message.receivedAt ?? sourceValues.contentModificationDate
 
             if isDuplicate(
@@ -43,7 +56,11 @@ enum DesktopFileSaver {
             savedURLs.append(destination)
         }
 
-        return DesktopSaveResult(savedURLs: savedURLs, duplicateCount: duplicateCount)
+        return DesktopSaveResult(
+            savedURLs: savedURLs,
+            duplicateCount: duplicateCount,
+            incompleteCount: incompleteCount
+        )
     }
 
     static func isDuplicate(
