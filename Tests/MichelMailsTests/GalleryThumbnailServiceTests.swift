@@ -65,3 +65,47 @@ func universalGalleryFileClassification() {
     #expect(MailAttachmentKind.classify(name: "film.mkv", MIMEType: "") == .video)
     #expect(MailAttachmentKind.classify(name: "report.pdf", MIMEType: "") == .pdf)
 }
+
+@Test("Desktop saving skips a file with the same name, email date, and size")
+func desktopDuplicateDetection() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceDirectory = root.appendingPathComponent("Source", isDirectory: true)
+    let desktopDirectory = root.appendingPathComponent("Desktop", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: desktopDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sourceURL = sourceDirectory.appendingPathComponent("photo.jpg")
+    try Data([1, 2, 3, 4, 5]).write(to: sourceURL)
+    let receivedAt = Date(timeIntervalSince1970: 1_750_000_000)
+    let message = MailMessageItem(
+        reference: MailMessageReference(messageIdentifier: "desktop-test", localIdentifier: "1"),
+        sender: "Raffi",
+        subject: "Photo",
+        preview: "",
+        receivedAt: receivedAt
+    )
+    let item = MailImageItem(
+        cachedURL: sourceURL,
+        displayName: "photo.jpg",
+        MIMEType: "image/jpeg",
+        kind: .image,
+        message: message
+    )
+
+    let firstSave = try DesktopFileSaver.save([item], to: desktopDirectory)
+    #expect(firstSave.savedURLs.count == 1)
+    #expect(firstSave.duplicateCount == 0)
+
+    let secondSave = try DesktopFileSaver.save([item], to: desktopDirectory)
+    #expect(secondSave.savedURLs.isEmpty)
+    #expect(secondSave.duplicateCount == 1)
+    #expect(
+        DesktopFileSaver.isDuplicate(
+            at: desktopDirectory.appendingPathComponent("photo.jpg"),
+            expectedSize: 5,
+            expectedDate: receivedAt
+        )
+    )
+}

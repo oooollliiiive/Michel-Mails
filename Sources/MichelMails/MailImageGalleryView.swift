@@ -8,7 +8,11 @@ struct MailImageGalleryView: View {
     let onClose: () -> Void
 
     @State private var selectedIDs: Set<UUID> = []
+    @State private var selectionOrder: [UUID] = []
+    @State private var cardFrames: [UUID: CGRect] = [:]
     @State private var statusMessage = "Select files · drag them anywhere or copy and paste"
+    @State private var transientMessage: String?
+    @State private var transientMessageTask: Task<Void, Never>?
 
     private let columns = [
         GridItem(.adaptive(minimum: 165, maximum: 240), spacing: 14)
@@ -16,6 +20,11 @@ struct MailImageGalleryView: View {
 
     private var selectedItems: [MailImageItem] {
         gallery.items.filter { selectedIDs.contains($0.id) }
+    }
+
+    private var lastSelectedItem: MailImageItem? {
+        guard let ID = selectionOrder.last else { return nil }
+        return gallery.items.first { $0.id == ID }
     }
 
     var body: some View {
@@ -26,13 +35,26 @@ struct MailImageGalleryView: View {
             }
             Divider()
 
-            ScrollView {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                    ForEach(gallery.items) { item in
-                        imageCard(item)
+            GeometryReader { viewport in
+                ScrollView {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                        ForEach(gallery.items) { item in
+                            imageCard(item)
+                        }
+                    }
+                    .padding(18)
+                }
+                .coordinateSpace(name: "MichelMailsGalleryScroll")
+                .onPreferenceChange(GalleryCardFramePreferenceKey.self) { frames in
+                    cardFrames = frames
+                }
+                .overlay {
+                    if !selectedIDs.isEmpty {
+                        selectionActionBar
+                            .position(selectionBarPosition(in: viewport.size))
+                            .transition(.scale(scale: 0.94).combined(with: .opacity))
                     }
                 }
-                .padding(18)
             }
             .background(Color(nsColor: .underPageBackgroundColor))
 
@@ -40,6 +62,19 @@ struct MailImageGalleryView: View {
             footer
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .bottom) {
+            if let transientMessage {
+                Text(transientMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 8)
+                    .background(.black.opacity(0.78), in: Capsule())
+                    .shadow(radius: 5, y: 2)
+                    .padding(.bottom, 50)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
     }
 
     private var scanNotice: some View {
@@ -81,8 +116,10 @@ struct MailImageGalleryView: View {
             Button(selectedIDs.count == gallery.items.count ? "Deselect All" : "Select All") {
                 if selectedIDs.count == gallery.items.count {
                     selectedIDs.removeAll()
+                    selectionOrder.removeAll()
                 } else {
                     selectedIDs = Set(gallery.items.map(\.id))
+                    selectionOrder = gallery.items.map(\.id)
                 }
             }
             .disabled(gallery.items.isEmpty)
@@ -91,9 +128,9 @@ struct MailImageGalleryView: View {
                 .disabled(selectedIDs.isEmpty)
 
             Button("Open in Email") {
-                if let item = selectedItems.first { onOpenEmail(item.message) }
+                if let item = lastSelectedItem { onOpenEmail(item.message) }
             }
-            .disabled(selectedItems.count != 1)
+            .disabled(lastSelectedItem == nil)
 
             Button(saveButtonTitle, action: saveSelected)
                 .buttonStyle(.borderedProminent)
@@ -156,6 +193,56 @@ struct MailImageGalleryView: View {
         return "\(gallery.items.count) \(noun) · \(order)"
     }
 
+    private var selectionActionBar: some View {
+        HStack(spacing: 11) {
+            Text(selectedIDs.count == 1 ? "1 file" : "\(selectedIDs.count) files")
+                .font(.system(size: 12, weight: .bold))
+
+            Rectangle()
+                .fill(.white.opacity(0.42))
+                .frame(width: 1, height: 17)
+
+            Button("Save to Desktop", action: saveSelectedToDesktop)
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .semibold))
+
+            Rectangle()
+                .fill(.white.opacity(0.42))
+                .frame(width: 1, height: 17)
+
+            Button("Open in Email") {
+                if let item = lastSelectedItem { onOpenEmail(item.message) }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .semibold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .frame(height: 36)
+        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .shadow(color: .black.opacity(0.22), radius: 7, y: 3)
+        .fixedSize()
+        .zIndex(20)
+    }
+
+    private func selectionBarPosition(in viewportSize: CGSize) -> CGPoint {
+        let halfBarWidth: CGFloat = 180
+        let barHalfHeight: CGFloat = 18
+        let topY = barHalfHeight + 8
+        guard let ID = selectionOrder.last,
+              let frame = cardFrames[ID],
+              frame.maxY > 0,
+              frame.minY < viewportSize.height else {
+            return CGPoint(x: viewportSize.width / 2, y: topY)
+        }
+
+        let x = min(
+            max(frame.midX, halfBarWidth + 8),
+            max(halfBarWidth + 8, viewportSize.width - halfBarWidth - 8)
+        )
+        return CGPoint(x: x, y: max(topY, frame.minY - barHalfHeight - 7))
+    }
+
     private func imageCard(_ item: MailImageItem) -> some View {
         let selected = selectedIDs.contains(item.id)
         return VStack(alignment: .leading, spacing: 0) {
@@ -171,7 +258,9 @@ struct MailImageGalleryView: View {
                         Text(item.displayName)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.white)
-                            .lineLimit(2)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.62)
+                            .allowsTightening(true)
                             .multilineTextAlignment(.leading)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 5)
@@ -188,7 +277,7 @@ struct MailImageGalleryView: View {
 
                     Spacer()
 
-                    VStack(alignment: .leading, spacing: 1) {
+                    VStack(alignment: .center, spacing: 1) {
                         Text("Sent by \(item.message.sender)")
                             .font(.system(size: 10.5, weight: .semibold))
                         Text(displayDate(item.message.receivedAt))
@@ -196,7 +285,7 @@ struct MailImageGalleryView: View {
                     }
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 5)
                     .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 6))
@@ -212,6 +301,16 @@ struct MailImageGalleryView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(selected ? Color.accentColor : Color.clear, lineWidth: 3)
         )
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: GalleryCardFramePreferenceKey.self,
+                    value: [
+                        item.id: geometry.frame(in: .named("MichelMailsGalleryScroll"))
+                    ]
+                )
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture {
             toggle(item)
@@ -245,14 +344,68 @@ struct MailImageGalleryView: View {
     private func toggle(_ item: MailImageItem) {
         if selectedIDs.contains(item.id) {
             selectedIDs.remove(item.id)
+            selectionOrder.removeAll { $0 == item.id }
         } else {
             selectedIDs.insert(item.id)
+            selectionOrder.removeAll { $0 == item.id }
+            selectionOrder.append(item.id)
         }
         statusMessage = "Drag files, copy them, or save them"
     }
 
     private func copySelected() {
         copy(selectedItems)
+    }
+
+    private func saveSelectedToDesktop() {
+        let items = selectedItems
+        guard !items.isEmpty,
+              let desktop = FileManager.default.urls(
+                  for: .desktopDirectory,
+                  in: .userDomainMask
+              ).first else {
+            showTransientMessage("The Desktop folder is unavailable.")
+            return
+        }
+
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try DesktopFileSaver.save(items, to: desktop)
+                }.value
+                let savedCount = result.savedURLs.count
+                let duplicateCount = result.duplicateCount
+                if savedCount == 0 && duplicateCount == 1 {
+                    showTransientMessage("Already on Desktop — nothing copied.")
+                } else if savedCount == 0 {
+                    showTransientMessage("\(duplicateCount) files are already on Desktop — nothing copied.")
+                } else if duplicateCount > 0 {
+                    showTransientMessage(
+                        "\(savedCount) saved to Desktop · \(duplicateCount) already there."
+                    )
+                } else {
+                    showTransientMessage(
+                        savedCount == 1 ? "Saved to Desktop." : "\(savedCount) files saved to Desktop."
+                    )
+                }
+            } catch {
+                showTransientMessage("Could not save to Desktop.")
+            }
+        }
+    }
+
+    private func showTransientMessage(_ message: String) {
+        transientMessageTask?.cancel()
+        withAnimation(.easeOut(duration: 0.16)) {
+            transientMessage = message
+        }
+        transientMessageTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.18)) {
+                transientMessage = nil
+            }
+        }
     }
 
     private func copy(_ items: [MailImageItem]) {
@@ -378,6 +531,17 @@ struct MailImageGalleryView: View {
             Date.FormatStyle(date: .abbreviated, time: .omitted)
                 .locale(Locale(identifier: "en_US"))
         )
+    }
+}
+
+private struct GalleryCardFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(
+        value: inout [UUID: CGRect],
+        nextValue: () -> [UUID: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 
