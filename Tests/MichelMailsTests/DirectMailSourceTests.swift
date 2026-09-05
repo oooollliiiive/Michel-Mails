@@ -124,6 +124,48 @@ func directMailTwoPassScan() async throws {
     #expect(content.messages[0].sourcePath.hasSuffix("1.emlx"))
 }
 
+@Test("The direct Mail source adapts to an older minimal Envelope Index schema")
+func directMailSchemaAdaptation() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let versionDirectory = root.appendingPathComponent("V9", isDirectory: true)
+    try FileManager.default.createDirectory(at: versionDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let databaseURL = root.appendingPathComponent("Envelope Index")
+    var database: OpaquePointer?
+    #expect(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+    let schema = """
+    CREATE TABLE messages (
+        ROWID INTEGER PRIMARY KEY, global_message_id INTEGER,
+        date_sent REAL, deleted INTEGER
+    );
+    CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id INTEGER);
+    INSERT INTO message_global_data VALUES (1, 730);
+    INSERT INTO messages VALUES (1, 1, 1740000000, 0);
+    INSERT INTO messages VALUES (2, 1, 1740000001, 1);
+    """
+    var errorPointer: UnsafeMutablePointer<CChar>?
+    let status = sqlite3_exec(database, schema, nil, nil, &errorPointer)
+    if let errorPointer { sqlite3_free(errorPointer) }
+    #expect(status == SQLITE_OK)
+    if let database { sqlite3_close(database) }
+    database = nil
+
+    let source = try DirectMailSource(
+        databaseURL: databaseURL,
+        versionDirectory: versionDirectory
+    )
+    #expect(try await source.totalMessageCount() == 1)
+
+    let metadata = try await source.metadataBatch(after: 0, maximumCount: 100)
+    #expect(metadata.messages.count == 1)
+    #expect(metadata.messages[0].messageIdentifier == "730")
+    #expect(metadata.messages[0].sender.isEmpty)
+    #expect(metadata.messages[0].subject.isEmpty)
+    #expect(metadata.messages[0].receivedAt == Date(timeIntervalSince1970: 1_740_000_000))
+}
+
 @Test("The two direct scan counters persist independently")
 func directScanCounters() async throws {
     let directory = FileManager.default.temporaryDirectory

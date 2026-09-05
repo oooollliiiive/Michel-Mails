@@ -21,6 +21,7 @@ enum DirectMailSourceError: LocalizedError {
 actor DirectMailSource {
     private var database: OpaquePointer?
     private let versionDirectory: URL
+    private let schema: EnvelopeSchema
     private var mailboxStoreDirectories: [String: [URL]] = [:]
 
     init() throws {
@@ -45,9 +46,15 @@ actor DirectMailSource {
             }
             throw DirectMailSourceError.incompatibleDatabase(detail)
         }
-        database = connection
         sqlite3_busy_timeout(connection, 1_000)
         sqlite3_exec(connection, "PRAGMA query_only = 1", nil, nil, nil)
+        do {
+            schema = try EnvelopeSchema(connection: connection)
+            database = connection
+        } catch {
+            sqlite3_close_v2(connection)
+            throw error
+        }
     }
 
     deinit {
@@ -55,7 +62,7 @@ actor DirectMailSource {
     }
 
     func totalMessageCount() throws -> Int {
-        try scalarInt("SELECT COUNT(*) FROM messages WHERE deleted = 0")
+        try scalarInt(schema.countSQL)
     }
 
     func metadataBatch(after rowID: Int64, maximumCount: Int) throws -> DirectMailScanBatch {
@@ -143,42 +150,169 @@ actor DirectMailSource {
         let attachmentNames: [String]
     }
 
+    /// Apple changes the private Envelope Index schema between macOS releases.
+    /// Build a query only from columns found in the database instead of pinning
+    /// the scanner to one OS version.
+    private struct EnvelopeSchema {
+        let countSQL: String
+        let rowsSQL: String
+
+        init(connection: OpaquePointer) throws {
+            let messages = try Self.columns(in: "messages", connection: connection)
+            guard !messages.isEmpty else {
+                throw DirectMailSourceError.incompatibleDatabase("the messages table is missing")
+            }
+
+            let globalData = try Self.columns(in: "message_global_data", connection: connection)
+            let addresses = try Self.columns(in: "addresses", connection: connection)
+            let subjects = try Self.columns(in: "subjects", connection: connection)
+            let mailboxes = try Self.columns(in: "mailboxes", connection: connection)
+            let recipients = try Self.columns(in: "recipients", connection: connection)
+            let attachments = try Self.columns(in: "attachments", connection: connection)
+
+            var joins: [String] = []
+
+            var messageIdentifier = "''"
+            if messages.contains("global_message_id"),
+               let identifierColumn = Self.first(
+                   ["message_id_header", "message_identifier", "internet_message_id", "message_id"],
+                   in: globalData
+               ) {
+                joins.append("LEFT JOIN message_global_data g ON m.global_message_id = g.ROWID")
+                messageIdentifier = "COALESCE(CAST(g.\(identifierColumn) AS TEXT), '')"
+            } else if let identifierColumn = Self.first(
+                ["message_id_header", "message_identifier", "internet_message_id", "document_id", "remote_id"],
+                in: messages
+            ) {
+                messageIdentifier = "COALESCE(CAST(m.\(identifierColumn) AS TEXT), '')"
+            }
+
+            var senderAddress = "''"
+            var senderName = "''"
+            if messages.contains("sender"),
+               addresses.contains("address") {
+                joins.append("LEFT JOIN addresses sender ON m.sender = sender.ROWID")
+                senderAddress = "COALESCE(sender.address, '')"
+                if addresses.contains("comment") {
+                    senderName = "COALESCE(sender.comment, '')"
+                }
+            }
+
+            var subject = messages.contains("subject_prefix")
+                ? "COALESCE(m.subject_prefix, '')"
+                : "''"
+            if messages.contains("subject"), subjects.contains("subject") {
+                joins.append("LEFT JOIN subjects subjects ON m.subject = subjects.ROWID")
+                subject += " || COALESCE(subjects.subject, '')"
+            } else if let directSubject = Self.first(["subject_text", "subject_string"], in: messages) {
+                subject += " || COALESCE(CAST(m.\(directSubject) AS TEXT), '')"
+            }
+
+            var mailboxURL = "''"
+            if messages.contains("mailbox"), mailboxes.contains("url") {
+                joins.append("LEFT JOIN mailboxes mailboxes ON m.mailbox = mailboxes.ROWID")
+                mailboxURL = "COALESCE(mailboxes.url, '')"
+            }
+
+            let recipientsSQL: String
+            if recipients.contains("message"),
+               recipients.contains("address"),
+               addresses.contains("address") {
+                let recipientName = addresses.contains("comment")
+                    ? "COALESCE(recipient.comment, '')"
+                    : "''"
+                recipientsSQL = """
+                COALESCE((
+                    SELECT group_concat(
+                        CASE WHEN \(recipientName) = ''
+                             THEN COALESCE(recipient.address, '')
+                             ELSE \(recipientName) || ' <' || recipient.address || '>' END,
+                        char(29)
+                    )
+                    FROM recipients r
+                    JOIN addresses recipient ON r.address = recipient.ROWID
+                    WHERE r.message = m.ROWID
+                ), '')
+                """
+            } else {
+                recipientsSQL = "''"
+            }
+
+            let attachmentNamesSQL: String
+            if attachments.contains("message"), attachments.contains("name") {
+                attachmentNamesSQL = """
+                COALESCE((
+                    SELECT group_concat(replace(COALESCE(att.name, ''), char(29), ' '), char(29))
+                    FROM attachments att WHERE att.message = m.ROWID
+                ), '')
+                """
+            } else {
+                attachmentNamesSQL = "''"
+            }
+
+            let receivedAt = Self.first(
+                ["date_received", "date_sent", "display_date"],
+                in: messages
+            ).map { "m.\($0)" } ?? "NULL"
+            let size = Self.first(["size", "message_size"], in: messages)
+                .map { "COALESCE(m.\($0), 0)" } ?? "0"
+            let visibleCondition = messages.contains("deleted") ? "m.deleted = 0 AND " : ""
+
+            countSQL = "SELECT COUNT(*) FROM messages m WHERE \(visibleCondition)1 = 1"
+            rowsSQL = """
+            SELECT m.ROWID,
+                   \(messageIdentifier),
+                   \(senderAddress),
+                   \(senderName),
+                   \(recipientsSQL),
+                   \(subject),
+                   \(receivedAt),
+                   \(size),
+                   \(mailboxURL),
+                   \(attachmentNamesSQL)
+            FROM messages m
+            \(joins.joined(separator: "\n"))
+            WHERE \(visibleCondition)m.ROWID > ?
+            ORDER BY m.ROWID ASC
+            LIMIT ?
+            """
+        }
+
+        private static func first(_ candidates: [String], in columns: Set<String>) -> String? {
+            candidates.first { columns.contains($0) }
+        }
+
+        private static func columns(
+            in table: String,
+            connection: OpaquePointer
+        ) throws -> Set<String> {
+            // Table names are internal constants, never input from an email or the user.
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(connection, "PRAGMA table_info(\(table))", -1, &statement, nil) == SQLITE_OK,
+                  let statement else {
+                let detail = String(cString: sqlite3_errmsg(connection))
+                throw DirectMailSourceError.incompatibleDatabase(detail)
+            }
+            defer { sqlite3_finalize(statement) }
+            var result: Set<String> = []
+            while true {
+                let status = sqlite3_step(statement)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else {
+                    let detail = String(cString: sqlite3_errmsg(connection))
+                    throw DirectMailSourceError.incompatibleDatabase(detail)
+                }
+                if let value = sqlite3_column_text(statement, 1) {
+                    result.insert(String(cString: value).lowercased())
+                }
+            }
+            return result
+        }
+    }
+
     private func rows(after rowID: Int64, limit: Int) throws -> [SourceRow] {
-        let SQL = """
-        SELECT m.ROWID,
-               COALESCE(g.message_id_header, ''),
-               COALESCE(sender.address, ''),
-               COALESCE(sender.comment, ''),
-               COALESCE((
-                   SELECT group_concat(
-                       CASE WHEN COALESCE(recipient.comment, '') = ''
-                            THEN COALESCE(recipient.address, '')
-                            ELSE recipient.comment || ' <' || recipient.address || '>' END,
-                       char(29)
-                   )
-                   FROM recipients r
-                   JOIN addresses recipient ON r.address = recipient.ROWID
-                   WHERE r.message = m.ROWID
-               ), ''),
-               COALESCE(m.subject_prefix, '') || COALESCE(subjects.subject, ''),
-               m.date_received,
-               COALESCE(m.size, 0),
-               COALESCE(mailboxes.url, ''),
-               COALESCE((
-                   SELECT group_concat(replace(COALESCE(att.name, ''), char(29), ' '), char(29))
-                   FROM attachments att WHERE att.message = m.ROWID
-               ), '')
-        FROM messages m
-        LEFT JOIN message_global_data g ON m.global_message_id = g.ROWID
-        LEFT JOIN addresses sender ON m.sender = sender.ROWID
-        LEFT JOIN subjects subjects ON m.subject = subjects.ROWID
-        LEFT JOIN mailboxes mailboxes ON m.mailbox = mailboxes.ROWID
-        WHERE m.deleted = 0 AND m.ROWID > ?
-        ORDER BY m.ROWID ASC
-        LIMIT ?
-        """
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, SQL, -1, &statement, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(database, schema.rowsSQL, -1, &statement, nil) == SQLITE_OK,
               let statement else {
             throw databaseError()
         }
