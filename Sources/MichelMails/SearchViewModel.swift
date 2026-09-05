@@ -14,9 +14,10 @@ final class SearchViewModel: ObservableObject {
     @Published var historyIsVisible = false
     @Published private(set) var recentPrompts: [String] = []
     @Published private(set) var displayedGallery: MailImageGallery?
+    @Published private(set) var displayedResults: MailSearchResults?
+    @Published private(set) var showParasiteImages = false
     @Published private(set) var imageCorrespondents: [String] = []
-    var onGalleryVisibilityChanged: ((Bool) -> Void)?
-    var onResultsReady: ((MailSearchResults) -> Void)?
+    var onContentVisibilityChanged: ((Bool) -> Void)?
     var onHistorySuggestionsChanged: ((Int) -> Void)?
 
     private let interpreter = AIQueryInterpreter()
@@ -24,6 +25,12 @@ final class SearchViewModel: ObservableObject {
     private let indexController: MailIndexController
     private let historyDefaultsKey = "recentSearchPrompts"
     private let AIInterpretationDefaultsKey = "AIInterpretationEnabled"
+    private var displayedGalleryRequest: DisplayedGalleryRequest?
+
+    private enum DisplayedGalleryRequest {
+        case quick(count: Int, direction: MailDirection, correspondent: String)
+        case query(MailQuery)
+    }
 
     init(indexController: MailIndexController) {
         self.indexController = indexController
@@ -86,11 +93,12 @@ final class SearchViewModel: ObservableObject {
                 case .search:
                     let results = try await searchWithFuzzyFallback(parsedQuery)
                     if results.items.isEmpty {
+                        closeDisplayedContent()
                         statusText = scansAreIncomplete
                             ? "No emails found in the scanned messages yet."
                             : "No emails found."
                     } else {
-                        onResultsReady?(results)
+                        displayResults(results)
                         statusText = results.items.count == 1
                             ? "1 email displayed."
                             : "\(results.items.count) emails displayed."
@@ -111,7 +119,7 @@ final class SearchViewModel: ObservableObject {
                             statusText = parsedQuery.action == .showImages ? "No images found." : "No files found."
                         }
                     } else {
-                        displayGallery(gallery)
+                        displayGallery(gallery, request: .query(gallery.query))
                         let noun = parsedQuery.action == .showImages ? "image" : "file"
                         statusText = gallery.items.count == 1
                             ? "1 \(noun) displayed."
@@ -154,10 +162,13 @@ final class SearchViewModel: ObservableObject {
         Task {
             defer { isWorking = false }
             do {
+                let requestedCount = max(count, 1)
+                let fetchCount = requestedCount + max(20, requestedCount / 2)
                 let candidates = try await indexController.latestImageAttachments(
-                    targetCount: count,
+                    targetCount: fetchCount,
                     direction: direction,
-                    correspondent: correspondent
+                    correspondent: correspondent,
+                    includePotentialParasites: showParasiteImages
                 ) ?? []
                 var query = MailQuery()
                 query.action = .showImages
@@ -165,13 +176,21 @@ final class SearchViewModel: ObservableObject {
                 query.sender = correspondent.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
                 query.hasImage = true
                 query.hasAttachment = true
-                query.limit = max(count, 1)
+                query.limit = requestedCount
                 query.attachmentKinds = [.image]
                 query.sortOrder = .newestFirst
 
-                let gallery = try await mailService.galleryImages(query, candidates: candidates)
+                let preparedGallery = try await mailService.galleryImages(
+                    query,
+                    candidates: candidates,
+                    includePotentialParasites: showParasiteImages
+                )
+                let gallery = Self.trimmingGallery(
+                    preparedGallery,
+                    toAtLeast: requestedCount
+                )
                 guard !gallery.items.isEmpty else {
-                    closeGallery()
+                    closeDisplayedContent()
                     if gallery.attemptedCount > 0 {
                         statusText = "Images were indexed, but their local files are not available yet."
                     } else {
@@ -183,7 +202,14 @@ final class SearchViewModel: ObservableObject {
                     return
                 }
 
-                displayGallery(gallery)
+                displayGallery(
+                    gallery,
+                    request: .quick(
+                        count: requestedCount,
+                        direction: direction,
+                        correspondent: correspondent
+                    )
+                )
                 statusText = gallery.items.count == 1
                     ? "1 image displayed."
                     : "\(gallery.items.count) images displayed."
@@ -195,9 +221,30 @@ final class SearchViewModel: ObservableObject {
     }
 
     func closeGallery() {
-        guard displayedGallery != nil else { return }
+        closeDisplayedContent()
+    }
+
+    func closeResults() {
+        closeDisplayedContent()
+    }
+
+    func closeDisplayedContent() {
+        guard displayedGallery != nil || displayedResults != nil else { return }
         displayedGallery = nil
-        onGalleryVisibilityChanged?(false)
+        displayedResults = nil
+        displayedGalleryRequest = nil
+        onContentVisibilityChanged?(false)
+    }
+
+    func setShowParasiteImages(_ enabled: Bool) {
+        showParasiteImages = enabled
+        guard !isWorking, let request = displayedGalleryRequest else { return }
+        switch request {
+        case let .quick(count, direction, correspondent):
+            showLatestImages(count: count, direction: direction, correspondent: correspondent)
+        case let .query(query):
+            reloadGallery(query)
+        }
     }
 
     func refreshImageCorrespondents() {
@@ -354,15 +401,26 @@ final class SearchViewModel: ObservableObject {
     private func gallery(for query: MailQuery) async throws -> MailImageGallery {
         let candidates = try await attachmentCandidates(for: query)
         if query.action == .showFiles {
-            return try await mailService.galleryFiles(query, candidates: candidates)
+            return try await mailService.galleryFiles(
+                query,
+                candidates: candidates,
+                includePotentialParasites: showParasiteImages
+            )
         }
-        return try await mailService.galleryImages(query, candidates: candidates)
+        return try await mailService.galleryImages(
+            query,
+            candidates: candidates,
+            includePotentialParasites: showParasiteImages
+        )
     }
 
     private func attachmentCandidates(
         for query: MailQuery
     ) async throws -> [IndexedMailAttachmentCandidate] {
-        try await indexController.searchAttachments(query) ?? []
+        try await indexController.searchAttachments(
+            query,
+            includePotentialParasites: showParasiteImages
+        ) ?? []
     }
 
     private func summary(
@@ -398,9 +456,85 @@ final class SearchViewModel: ObservableObject {
         (error as? MichelMailsError)?.errorDescription ?? "Something went wrong."
     }
 
-    private func displayGallery(_ gallery: MailImageGallery) {
+    private func displayGallery(
+        _ gallery: MailImageGallery,
+        request: DisplayedGalleryRequest
+    ) {
+        displayedResults = nil
         displayedGallery = gallery
-        onGalleryVisibilityChanged?(true)
+        displayedGalleryRequest = request
+        onContentVisibilityChanged?(true)
+    }
+
+    private func displayResults(_ results: MailSearchResults) {
+        displayedGallery = nil
+        displayedGalleryRequest = nil
+        displayedResults = results
+        onContentVisibilityChanged?(true)
+        prepareEmailImagePreviews(for: results)
+    }
+
+    private func prepareEmailImagePreviews(for results: MailSearchResults) {
+        let candidates = results.items.flatMap(\.imageAttachments)
+        guard !candidates.isEmpty else { return }
+        Task {
+            var query = results.query
+            query.action = .showImages
+            query.hasImage = true
+            query.hasAttachment = true
+            query.attachmentKinds = [.image]
+            let gallery = try? await mailService.galleryImages(
+                query,
+                candidates: candidates,
+                includePotentialParasites: true
+            )
+            guard displayedResults?.id == results.id, let gallery else { return }
+            var updated = results
+            updated.imagePreviews = gallery.items
+            displayedResults = updated
+        }
+    }
+
+    private func reloadGallery(_ query: MailQuery) {
+        guard !isWorking else { return }
+        isWorking = true
+        statusText = "Updating image filters…"
+        Task {
+            defer { isWorking = false }
+            do {
+                let gallery = try await gallery(for: query)
+                displayGallery(gallery, request: .query(query))
+                statusText = gallery.items.count == 1
+                    ? "1 image displayed."
+                    : "\(gallery.items.count) images displayed."
+            } catch {
+                statusText = userFacingMessage(for: error)
+            }
+        }
+    }
+
+    private static func trimmingGallery(
+        _ gallery: MailImageGallery,
+        toAtLeast targetCount: Int
+    ) -> MailImageGallery {
+        guard gallery.items.count > targetCount else { return gallery }
+        var kept: [MailImageItem] = []
+        var index = 0
+        while index < gallery.items.count {
+            let messageKey = gallery.items[index].message.reference.stableKey
+            let groupStart = index
+            while index < gallery.items.count,
+                  gallery.items[index].message.reference.stableKey == messageKey {
+                index += 1
+            }
+            kept.append(contentsOf: gallery.items[groupStart..<index])
+            if kept.count >= targetCount { break }
+        }
+        return MailImageGallery(
+            items: kept,
+            query: gallery.query,
+            attemptedCount: gallery.attemptedCount
+        )
     }
 
     private func recordInHistory(_ request: String) {

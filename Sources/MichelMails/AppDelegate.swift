@@ -15,7 +15,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let historySpacing: CGFloat = 12
 
     private var panel: PromptPanel?
-    private var resultsWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private let indexController: MailIndexController
     private let viewModel: SearchViewModel
@@ -29,11 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        viewModel.onGalleryVisibilityChanged = { [weak self] isVisible in
-            self?.setGalleryExpanded(isVisible)
-        }
-        viewModel.onResultsReady = { [weak self] results in
-            self?.showResults(results)
+        viewModel.onContentVisibilityChanged = { [weak self] isVisible in
+            self?.setContentExpanded(isVisible)
         }
         viewModel.onHistorySuggestionsChanged = { [weak self] count in
             self?.resizePromptPanel(forHistoryCount: count)
@@ -70,40 +66,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
-    }
-
-    private func showResults(_ results: MailSearchResults) {
-        let window: NSWindow
-        if let resultsWindow {
-            window = resultsWindow
-        } else {
-            window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 820, height: 600),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "Email Results"
-            window.minSize = NSSize(width: 680, height: 420)
-            window.isReleasedWhenClosed = false
-            if !window.setFrameUsingName("MichelMailsResultsWindow") {
-                window.center()
-            }
-            window.setFrameAutosaveName("MichelMailsResultsWindow")
-            resultsWindow = window
-        }
-
-        window.contentView = NSHostingView(
-            rootView: MailSearchResultsView(
-                results: results,
-                indexController: indexController,
-                onOpenEmail: { [weak self] message in
-                    self?.viewModel.openMessage(message)
-                }
-            )
-        )
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
     }
 
     private func makePanel() -> PromptPanel {
@@ -158,11 +120,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func resizePromptPanel(forHistoryCount count: Int) {
         guard let panel else { return }
-        guard viewModel.displayedGallery == nil else { return }
+        guard viewModel.displayedGallery == nil, viewModel.displayedResults == nil else { return }
         resizePromptPanel(panel, forHistoryCount: count, animated: true)
     }
 
-    private func setGalleryExpanded(_ isExpanded: Bool) {
+    private func setContentExpanded(_ isExpanded: Bool, animated: Bool = true) {
         guard let panel else { return }
         if !isExpanded {
             panel.contentMinSize = NSSize(width: Self.promptWidth, height: Self.promptBaseHeight)
@@ -176,14 +138,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let visibleHistoryCount = viewModel.historyIsVisible
                 ? viewModel.historySuggestions.count
                 : 0
-            resizePromptPanel(panel, forHistoryCount: visibleHistoryCount, animated: true)
+            resizePromptPanel(panel, forHistoryCount: visibleHistoryCount, animated: animated)
             return
         }
 
         let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
         let targetContentWidth = min(1_020, (visibleFrame?.width ?? 1_020) * 0.92)
-        let targetContentHeight = min(760, (visibleFrame?.height ?? 760) * 0.92)
-        panel.contentMinSize = NSSize(width: 720, height: 520)
+        let targetContentHeight = min(940, (visibleFrame?.height ?? 940) * 0.96)
+        panel.contentMinSize = NSSize(width: 720, height: min(820, targetContentHeight))
         panel.contentMaxSize = NSSize(width: 10_000, height: 10_000)
 
         let targetFrameSize = panel.frameRect(
@@ -203,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             targetFrame.origin.x = min(max(targetFrame.minX, visibleFrame.minX), visibleFrame.maxX - targetFrame.width)
             targetFrame.origin.y = max(targetFrame.minY, visibleFrame.minY)
         }
-        panel.setFrame(targetFrame, display: true, animate: true)
+        panel.setFrame(targetFrame, display: true, animate: animated)
     }
 
     private func resizePromptPanel(
@@ -255,6 +217,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === panel else { return }
+        viewModel.closeDisplayedContent()
+        setContentExpanded(false, animated: false)
+        panel?.saveFrame(usingName: "MichelMailsPromptWindow")
         NSApp.terminate(nil)
     }
 }

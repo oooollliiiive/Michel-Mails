@@ -99,6 +99,11 @@ struct MailMessageReference: Equatable, Sendable {
     var accountName: String = ""
     var mailboxName: String = ""
     var sourcePath: String = ""
+
+    var stableKey: String {
+        if !messageIdentifier.isEmpty { return "message:\(messageIdentifier)" }
+        return "local:\(accountName):\(localIdentifier)"
+    }
 }
 
 struct MailMessageItem: Identifiable, Equatable, Sendable {
@@ -108,12 +113,15 @@ struct MailMessageItem: Identifiable, Equatable, Sendable {
     let subject: String
     let preview: String
     let receivedAt: Date?
+    var hasAttachment = false
+    var imageAttachments: [IndexedMailAttachmentCandidate] = []
 }
 
 struct MailSearchResults: Identifiable, Equatable, Sendable {
     let id = UUID()
     let items: [MailMessageItem]
     let query: MailQuery
+    var imagePreviews: [MailImageItem] = []
 }
 
 struct MailImageItem: Identifiable, Equatable, Sendable {
@@ -123,6 +131,7 @@ struct MailImageItem: Identifiable, Equatable, Sendable {
     let MIMEType: String
     let kind: MailAttachmentKind
     let message: MailMessageItem
+    var isPotentialParasite = false
 }
 
 struct MailImageGallery: Identifiable, Equatable, Sendable {

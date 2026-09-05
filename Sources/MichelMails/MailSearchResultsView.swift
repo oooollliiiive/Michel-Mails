@@ -1,9 +1,11 @@
+import AppKit
 import SwiftUI
 
 struct MailSearchResultsView: View {
     let results: MailSearchResults
     @ObservedObject var indexController: MailIndexController
     let onOpenEmail: (MailMessageItem) -> Void
+    let onClose: () -> Void
 
     @State private var selectedID: UUID?
 
@@ -30,12 +32,11 @@ struct MailSearchResultsView: View {
                 }
                 .padding(.vertical, 4)
             }
-            .background(Color(nsColor: .underPageBackgroundColor))
+            .background(Color(nsColor: .textBackgroundColor))
 
             Divider()
             footer
         }
-        .frame(minWidth: 680, minHeight: 420)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -80,6 +81,14 @@ struct MailSearchResultsView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(selectedItem == nil)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Close email results")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -108,11 +117,12 @@ struct MailSearchResultsView: View {
 
     private func resultRow(_ item: MailMessageItem) -> some View {
         let selected = selectedID == item.id
+        let previews = previewItems(for: item)
 
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: "envelope.fill")
                 .font(.system(size: 16))
-                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                .foregroundStyle(Color.accentColor)
                 .frame(width: 30, height: 30)
                 .background(Circle().fill(Color.accentColor.opacity(selected ? 0.14 : 0.07)))
 
@@ -129,21 +139,47 @@ struct MailSearchResultsView: View {
                     }
                 }
 
-                Text(item.subject)
-                    .font(.system(size: 13.5, weight: .medium))
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(item.subject)
+                        .font(.system(size: 13.5, weight: .medium))
+                        .lineLimit(1)
+                    if item.hasAttachment {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .help("This email has attachments")
+                    }
+                }
 
                 if !item.preview.isEmpty {
                     Text(item.preview)
                         .font(.system(size: 12.5))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary.opacity(0.78))
                         .lineLimit(2)
                 }
+            }
+
+            if !previews.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        ForEach(previews) { preview in
+                            EmailAttachmentThumbnail(item: preview)
+                        }
+                    }
+                }
+                .frame(
+                    width: min(CGFloat(previews.count) * 49, 340),
+                    height: 48
+                )
             }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 11)
-        .background(selected ? Color.accentColor.opacity(0.09) : Color.clear)
+        .background(
+            selected
+                ? Color.accentColor.opacity(0.10)
+                : Color(nsColor: .textBackgroundColor)
+        )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
             selectedID = item.id
@@ -162,6 +198,11 @@ struct MailSearchResultsView: View {
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
+    private func previewItems(for item: MailMessageItem) -> [MailImageItem] {
+        let key = item.reference.stableKey
+        return results.imagePreviews.filter { $0.message.reference.stableKey == key }
+    }
+
     private func displayDate(_ date: Date) -> String {
         if Calendar.current.isDateInToday(date) {
             return date.formatted(date: .omitted, time: .shortened)
@@ -170,5 +211,38 @@ struct MailSearchResultsView: View {
             return date.formatted(.dateTime.month(.abbreviated).day())
         }
         return date.formatted(.dateTime.year().month(.abbreviated).day())
+    }
+}
+
+private struct EmailAttachmentThumbnail: View {
+    let item: MailImageItem
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            Color(nsColor: .controlBackgroundColor)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ProgressView()
+                    .controlSize(.mini)
+            }
+        }
+        .frame(width: 44, height: 44)
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .stroke(item.isPotentialParasite ? Color.red : Color.primary.opacity(0.12), lineWidth: item.isPotentialParasite ? 2 : 1)
+        )
+        .help(item.displayName)
+        .task(id: item.cachedURL) {
+            image = await GalleryThumbnailService.thumbnail(
+                at: item.cachedURL,
+                kind: item.kind,
+                maximumDimension: 160
+            ).image
+        }
     }
 }

@@ -77,6 +77,7 @@ struct IndexedMailAttachmentCandidate: Equatable, Sendable {
     let kind: MailAttachmentKind
     var messageSourcePath: String = ""
     var sourcePath: String = ""
+    var isPotentialParasite = false
 
     var message: MailMessageItem {
         MailMessageItem(
@@ -90,7 +91,8 @@ struct IndexedMailAttachmentCandidate: Equatable, Sendable {
             sender: sender.isEmpty ? "Unknown sender" : sender,
             subject: subject.isEmpty ? "(No subject)" : subject,
             preview: preview,
-            receivedAt: receivedAt
+            receivedAt: receivedAt,
+            hasAttachment: true
         )
     }
 }

@@ -30,7 +30,8 @@ final class MailService {
 
     func galleryImages(
         _ query: MailQuery,
-        candidates: [IndexedMailAttachmentCandidate]
+        candidates: [IndexedMailAttachmentCandidate],
+        includePotentialParasites: Bool = false
     ) async throws -> MailImageGallery {
         var imageQuery = query
         imageQuery.hasImage = true
@@ -38,12 +39,17 @@ final class MailService {
         if imageQuery.attachmentKinds.isEmpty {
             imageQuery.attachmentKinds = [.image]
         }
-        return try await galleryFiles(imageQuery, candidates: candidates)
+        return try await galleryFiles(
+            imageQuery,
+            candidates: candidates,
+            includePotentialParasites: includePotentialParasites
+        )
     }
 
     func galleryFiles(
         _ query: MailQuery,
-        candidates: [IndexedMailAttachmentCandidate]
+        candidates: [IndexedMailAttachmentCandidate],
+        includePotentialParasites: Bool = false
     ) async throws -> MailImageGallery {
         var fileQuery = query
         fileQuery.hasAttachment = true
@@ -66,7 +72,7 @@ final class MailService {
                         guard await Self.extract(candidate, to: targetURL) else {
                             return (offset, nil)
                         }
-                        let item = MailImageItem(
+                        var item = MailImageItem(
                             cachedURL: targetURL,
                             displayName: candidate.attachmentName.isEmpty
                                 ? "Untitled file"
@@ -75,8 +81,12 @@ final class MailService {
                             kind: candidate.kind,
                             message: candidate.message
                         )
-                        guard item.kind != .image || Self.isUsefulVisualAttachment(at: targetURL) else {
-                            return (offset, nil)
+                        if item.kind == .image {
+                            let looksLikeUsefulImage = Self.isUsefulVisualAttachment(at: targetURL)
+                            item.isPotentialParasite = candidate.isPotentialParasite || !looksLikeUsefulImage
+                            guard includePotentialParasites || !item.isPotentialParasite else {
+                                return (offset, nil)
+                            }
                         }
                         return (offset, item)
                     }

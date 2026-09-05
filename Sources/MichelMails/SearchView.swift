@@ -198,10 +198,24 @@ struct SearchView: View {
                 MailImageGalleryView(
                     gallery: gallery,
                     indexController: indexController,
+                    showParasiteImages: Binding(
+                        get: { viewModel.showParasiteImages },
+                        set: viewModel.setShowParasiteImages
+                    ),
                     onOpenEmail: viewModel.openMessage,
                     onClose: viewModel.closeGallery
                 )
                 .id(gallery.id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let results = viewModel.displayedResults {
+                Divider()
+                MailSearchResultsView(
+                    results: results,
+                    indexController: indexController,
+                    onOpenEmail: viewModel.openMessage,
+                    onClose: viewModel.closeResults
+                )
+                .id(results.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -346,14 +360,16 @@ struct SearchView: View {
         color: Color
     ) -> some View {
         HStack(spacing: 8) {
+            Spacer()
             Text(title)
                 .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
-            Spacer()
+                .frame(width: 112, alignment: .trailing)
             Text(scanCountText(progress))
                 .font(.system(size: 10.5, weight: .medium, design: .rounded))
                 .foregroundStyle(color)
                 .lineLimit(1)
+                .frame(minWidth: 172, alignment: .trailing)
         }
         .help(progress.isFinished
             ? "This scan is complete."

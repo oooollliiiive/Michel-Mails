@@ -4,6 +4,7 @@ import SwiftUI
 struct MailImageGalleryView: View {
     let gallery: MailImageGallery
     @ObservedObject var indexController: MailIndexController
+    @Binding var showParasiteImages: Bool
     let onOpenEmail: (MailMessageItem) -> Void
     let onClose: () -> Void
 
@@ -149,6 +150,21 @@ struct MailImageGalleryView: View {
             }
 
             Spacer()
+
+            Text("Show Parasite Images")
+                .font(.system(size: 11.5, weight: .semibold))
+            Text(showParasiteImages ? "ON" : "OFF")
+                .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                .foregroundStyle(showParasiteImages ? Color.red : Color.secondary)
+                .frame(width: 24, alignment: .trailing)
+            Toggle("Show Parasite Images", isOn: $showParasiteImages)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Show suspected signatures, logos, icons, and tracking images. They are outlined in red.")
+
+            Divider()
+                .frame(height: 20)
 
             Button("Select All") {
                 selectedIDs = Set(gallery.items.map(\.id))
@@ -329,7 +345,10 @@ struct MailImageGalleryView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(selected ? Color.accentColor : Color.clear, lineWidth: 3)
+                .stroke(
+                    item.isPotentialParasite ? Color.red : (selected ? Color.accentColor : Color.clear),
+                    lineWidth: selected || item.isPotentialParasite ? 3 : 0
+                )
         )
         .background {
             GeometryReader { geometry in
@@ -367,7 +386,9 @@ struct MailImageGalleryView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.displayName)\(selected ? ", selected" : "")")
+        .accessibilityLabel(
+            "\(item.displayName)\(item.isPotentialParasite ? ", suspected parasite image" : "")\(selected ? ", selected" : "")"
+        )
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 

@@ -245,6 +245,8 @@ func splitMetadataAndBodyIndexing() async throws {
     let immediateResults = try await database.searchMessages(subjectQuery).items
     #expect(immediateResults.count == 1)
     #expect(immediateResults[0].reference.sourcePath == "/private/tmp/fixture-message.emlx")
+    #expect(immediateResults[0].hasAttachment)
+    #expect(immediateResults[0].imageAttachments.map(\.attachmentName) == ["garden.jpg"])
 
     let contentState = try await database.beginContentPass(total: 1)
     #expect(contentState.progress.phase == .content)
@@ -335,7 +337,18 @@ func latestImageShortcutSearch() async throws {
             mailboxName: "Inbox",
             accountName: "Google",
             isSent: false,
-            attachments: images(3, prefix: "latest")
+            attachments: images(3, prefix: "latest") + [
+                IndexedMailAttachment(
+                    identifier: "signature-image",
+                    name: "signature-logo.png",
+                    MIMEType: "image/png",
+                    sizeBytes: 2_000,
+                    isImage: true,
+                    isUsefulImage: false,
+                    isDownloaded: true,
+                    sourcePath: "/tmp/signature-logo.png"
+                )
+            ]
         ),
         IndexedMailMessage(
             messageIdentifier: "sent",
@@ -385,6 +398,25 @@ func latestImageShortcutSearch() async throws {
     regularImageQuery.allResults = true
     let regularResults = try await database.searchAttachments(regularImageQuery)
     #expect(!regularResults.contains { $0.messageIdentifier == "junk" })
+    #expect(!regularResults.contains { $0.attachmentIdentifier == "signature-image" })
+
+    let resultsIncludingParasites = try await database.searchAttachments(
+        regularImageQuery,
+        includePotentialParasites: true
+    )
+    #expect(resultsIncludingParasites.contains {
+        $0.attachmentIdentifier == "signature-image" && $0.isPotentialParasite
+    })
+    #expect(!resultsIncludingParasites.contains { $0.messageIdentifier == "junk" })
+
+    let latestIncludingParasites = try await database.latestImageAttachments(
+        targetCount: 4,
+        direction: .received,
+        correspondent: "raf",
+        includePotentialParasites: true
+    )
+    #expect(latestIncludingParasites.count == 4)
+    #expect(latestIncludingParasites.last?.isPotentialParasite == true)
 
     let correspondents = try await database.recentImageCorrespondents(limit: 100)
     #expect(correspondents.contains("Raffi Adlan <raffi@example.com>"))

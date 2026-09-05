@@ -47,21 +47,29 @@ final class MailIndexController: ObservableObject {
         return try await database.searchMessages(query)
     }
 
-    func searchAttachments(_ query: MailQuery) async throws -> [IndexedMailAttachmentCandidate]? {
+    func searchAttachments(
+        _ query: MailQuery,
+        includePotentialParasites: Bool = false
+    ) async throws -> [IndexedMailAttachmentCandidate]? {
         guard let database, try await database.indexedMessageCount() > 0 else { return nil }
-        return try await database.searchAttachments(query)
+        return try await database.searchAttachments(
+            query,
+            includePotentialParasites: includePotentialParasites
+        )
     }
 
     func latestImageAttachments(
         targetCount: Int,
         direction: MailDirection,
-        correspondent: String
+        correspondent: String,
+        includePotentialParasites: Bool = false
     ) async throws -> [IndexedMailAttachmentCandidate]? {
         guard let database, try await database.indexedMessageCount() > 0 else { return nil }
         return try await database.latestImageAttachments(
             targetCount: targetCount,
             direction: direction,
-            correspondent: correspondent
+            correspondent: correspondent,
+            includePotentialParasites: includePotentialParasites
         )
     }
 
