@@ -108,14 +108,16 @@ struct DownloadsView: View {
 
     private func statusText(_ record: AttachmentTransferRecord) -> String {
         switch record.state {
+        case .available:
+            return "Ready to download"
         case .queued:
             return "Queued"
         case .downloading:
             return "Downloading…"
         case .ready:
             return record.exportedURL == nil
-                ? "Thumbnail ready"
-                : "Saved in Files from Mails"
+                ? "Available offline"
+                : "Saved in \(record.exportedURL?.deletingLastPathComponent().lastPathComponent ?? "folder")"
         case .failed:
             return record.errorMessage ?? "Download failed"
         }
@@ -149,6 +151,7 @@ struct AttachmentDownloadIndicator: View {
 
     private var ringAmount: CGFloat {
         switch state {
+        case .available: return 1
         case .queued: return 0.22
         case .downloading: return growth
         case .ready: return 1
@@ -158,6 +161,7 @@ struct AttachmentDownloadIndicator: View {
 
     private var symbolName: String {
         switch state {
+        case .available: return "arrow.down"
         case .queued, .downloading: return "arrow.down"
         case .ready: return "checkmark"
         case .failed: return "exclamationmark"
@@ -166,6 +170,7 @@ struct AttachmentDownloadIndicator: View {
 
     private var accessibilityText: String {
         switch state {
+        case .available: return "Download available"
         case .queued: return "Download queued"
         case .downloading: return "Downloading"
         case .ready: return "Download ready"

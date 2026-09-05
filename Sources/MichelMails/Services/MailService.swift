@@ -55,67 +55,33 @@ final class MailService {
         fileQuery.hasAttachment = true
 
         let cacheDirectory = try prepareGalleryCache()
-        var items: [MailImageItem] = []
-        let indexedCandidates = Array(candidates.enumerated())
-        for chunkStart in stride(from: 0, to: indexedCandidates.count, by: 12) {
-            let chunkEnd = min(chunkStart + 12, indexedCandidates.count)
-            let chunk = Array(indexedCandidates[chunkStart..<chunkEnd])
-            let chunkItems = await withTaskGroup(
-                of: (Int, MailImageItem?).self,
-                returning: [(Int, MailImageItem?)].self
-            ) { group in
-                for (offset, candidate) in chunk {
-                    group.addTask { @MainActor in
-                        let targetURL = cacheDirectory.appendingPathComponent(
-                            Self.cacheFileName(for: candidate, position: offset + 1)
-                        )
-                        let persistentThumbnail = PersistentThumbnailStore.existingThumbnailURL(
-                            for: candidate
-                        )
-                        var hasOriginalFile = false
-                        var displayURL = persistentThumbnail ?? targetURL
-                        if persistentThumbnail == nil {
-                            do {
-                                try await AttachmentMaterializer.materialize(
-                                    candidate,
-                                    to: targetURL,
-                                    allowMailDownload: false
-                                )
-                                hasOriginalFile = true
-                                displayURL = targetURL
-                            } catch {
-                                // Keep an explicit queued item. The download manager
-                                // will replace its progress circle with a thumbnail.
-                            }
-                        }
-                        var item = MailImageItem(
-                            cachedURL: displayURL,
-                            displayName: candidate.attachmentName.isEmpty
-                                ? "Untitled file"
-                                : candidate.attachmentName,
-                            MIMEType: candidate.MIMEType,
-                            kind: candidate.kind,
-                            message: candidate.message,
-                            sourceCandidate: candidate,
-                            hasOriginalFile: hasOriginalFile
-                        )
-                        if item.kind == .image {
-                            let looksLikeUsefulImage = persistentThumbnail == nil && !hasOriginalFile
-                                ? true
-                                : Self.isUsefulVisualAttachment(at: displayURL)
-                            item.isPotentialParasite = candidate.isPotentialParasite || !looksLikeUsefulImage
-                            guard includePotentialParasites || !item.isPotentialParasite else {
-                                return (offset, nil)
-                            }
-                        }
-                        return (offset, item)
-                    }
-                }
-                var results: [(Int, MailImageItem?)] = []
-                for await result in group { results.append(result) }
-                return results
+        let items = candidates.enumerated().compactMap { offset, candidate -> MailImageItem? in
+            let persistentThumbnail = PersistentThumbnailStore.existingThumbnailURL(for: candidate)
+            let originalURL = PersistentAttachmentStore.existingOriginalURL(for: candidate)
+                ?? AttachmentMaterializer.directlyAvailableFile(for: candidate)
+            let placeholderURL = cacheDirectory.appendingPathComponent(
+                Self.cacheFileName(for: candidate, position: offset + 1)
+            )
+            let displayURL = persistentThumbnail ?? originalURL ?? placeholderURL
+            var item = MailImageItem(
+                cachedURL: displayURL,
+                displayName: candidate.attachmentName.isEmpty
+                    ? "Untitled file"
+                    : candidate.attachmentName,
+                MIMEType: candidate.MIMEType,
+                kind: candidate.kind,
+                message: candidate.message,
+                sourceCandidate: candidate,
+                hasOriginalFile: originalURL != nil
+            )
+            if item.kind == .image {
+                let looksLikeUsefulImage = persistentThumbnail == nil && originalURL == nil
+                    ? true
+                    : Self.isUsefulVisualAttachment(at: displayURL)
+                item.isPotentialParasite = candidate.isPotentialParasite || !looksLikeUsefulImage
+                guard includePotentialParasites || !item.isPotentialParasite else { return nil }
             }
-            items.append(contentsOf: chunkItems.sorted { $0.0 < $1.0 }.compactMap(\.1))
+            return item
         }
         return MailImageGallery(
             items: items,
@@ -124,42 +90,18 @@ final class MailService {
         )
     }
 
-    func copyAttachments(
-        _ candidates: [IndexedMailAttachmentCandidate],
-        to destination: URL
-    ) async -> MailMatchSummary {
-        var copiedCount = 0
-        var messageKeys: Set<String> = []
-        for (offset, candidate) in candidates.enumerated() {
-            let requestedName = candidate.attachmentName.isEmpty ? "Untitled file" : candidate.attachmentName
-            let proposedURL = destination.appendingPathComponent(requestedName)
-            let targetURL = availableURL(for: proposedURL, position: offset + 1)
-            do {
-                try await AttachmentMaterializer.materialize(
-                    candidate,
-                    to: targetURL,
-                    allowMailDownload: true
-                )
-                copiedCount += 1
-                messageKeys.insert(candidate.messageIdentifier + "|" + candidate.localIdentifier)
-            } catch {
-                try? FileManager.default.removeItem(at: targetURL)
-            }
-        }
-        return MailMatchSummary(messageCount: messageKeys.count, imageCount: copiedCount)
-    }
-
     func openMessage(_ message: MailMessageItem) async throws {
-        if await Self.openLocalMessageFile(at: message.reference.sourcePath) {
-            return
-        }
-
         let identifier = message.reference.messageIdentifier
         var scriptError: Error?
         do {
             let output = try await Self.runAppleScript(
                 Self.openMessageScript,
-                arguments: [identifier, message.reference.mailboxName]
+                arguments: [
+                    identifier,
+                    message.reference.localIdentifier,
+                    message.reference.accountName,
+                    message.reference.mailboxName
+                ]
             )
             if output.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
                 return
@@ -168,6 +110,9 @@ final class MailService {
             scriptError = error
         }
 
+        if await Self.openLocalMessageFile(at: message.reference.sourcePath) {
+            return
+        }
         if let messageURL = Self.messageURL(for: identifier),
            NSWorkspace.shared.open(messageURL) {
             return
@@ -229,21 +174,6 @@ final class MailService {
             .joined(separator: "-")
         let limited = String((cleaned.isEmpty ? "Untitled file" : cleaned).prefix(120))
         return String(format: "%04d-%@", position, limited)
-    }
-
-    private func availableURL(for proposedURL: URL, position: Int) -> URL {
-        guard FileManager.default.fileExists(atPath: proposedURL.path) else { return proposedURL }
-        let extensionName = proposedURL.pathExtension
-        let stem = proposedURL.deletingPathExtension().lastPathComponent
-        var suffix = max(position, 2)
-        while true {
-            let name = extensionName.isEmpty
-                ? "\(stem) \(suffix)"
-                : "\(stem) \(suffix).\(extensionName)"
-            let candidate = proposedURL.deletingLastPathComponent().appendingPathComponent(name)
-            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
-            suffix += 1
-        }
     }
 
     private func prepareGalleryCache() throws -> URL {
@@ -341,22 +271,13 @@ final class MailService {
     static let openMessageScript = #"""
     on run argv
         set targetMessageIdentifier to item 1 of argv
-        set targetMailboxName to item 2 of argv
+        set targetLocalIdentifier to item 2 of argv
+        set targetAccountName to item 3 of argv
+        set targetMailboxName to item 4 of argv
 
         tell application "Mail"
             activate
-            if targetMessageIdentifier is "" then return "0"
-
-            if (count of message viewers) > 0 then
-                repeat with aMessage in visible messages of message viewer 1
-                    try
-                        if (message id of aMessage as text) is targetMessageIdentifier then
-                            my openFoundMessage(contents of aMessage)
-                            return "1"
-                        end if
-                    end try
-                end repeat
-            end if
+            if targetMessageIdentifier is "" and targetLocalIdentifier is "" then return "0"
 
             set accountCandidates to every account
 
@@ -367,7 +288,7 @@ final class MailService {
                     repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
                         try
                             if (name of aMailbox as text) is targetMailboxName then
-                                if my openMessageInMailbox(contents of aMailbox, targetMessageIdentifier) then return "1"
+                                if my openMessageInMailbox(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier) then return "1"
                             end if
                         end try
                     end repeat
@@ -379,20 +300,32 @@ final class MailService {
             -- relying on a message:// URL for the fallback.
             repeat with anAccount in accountCandidates
                 repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
-                    if my openMessageInMailbox(contents of aMailbox, targetMessageIdentifier) then return "1"
+                    if my openMessageInMailbox(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier) then return "1"
                 end repeat
             end repeat
         end tell
         return "0"
     end run
 
-    on openMessageInMailbox(aMailbox, targetMessageIdentifier)
+    on openMessageInMailbox(aMailbox, targetMessageIdentifier, targetLocalIdentifier)
         tell application "Mail"
+            if targetLocalIdentifier is not "" then
+                try
+                    set localNumber to targetLocalIdentifier as integer
+                    set messageCandidates to every message of aMailbox whose id is localNumber
+                    if (count of messageCandidates) > 0 then
+                        my openFoundMessage(contents of item 1 of messageCandidates)
+                        return true
+                    end if
+                end try
+            end if
             try
-                set messageCandidates to every message of aMailbox whose message id is targetMessageIdentifier
-                if (count of messageCandidates) > 0 then
-                    my openFoundMessage(contents of item 1 of messageCandidates)
-                    return true
+                if targetMessageIdentifier is not "" then
+                    set messageCandidates to every message of aMailbox whose message id is targetMessageIdentifier
+                    if (count of messageCandidates) > 0 then
+                        my openFoundMessage(contents of item 1 of messageCandidates)
+                        return true
+                    end if
                 end if
             end try
         end tell

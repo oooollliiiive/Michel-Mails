@@ -44,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         viewModel.onShowDownloads = { [weak self] in
             self?.showDownloads()
         }
+        downloadManager.onPresentDownloads = { [weak self] in
+            self?.showDownloads()
+        }
         configureStatusItem()
         showPrompt()
         indexController.start()

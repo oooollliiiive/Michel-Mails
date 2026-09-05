@@ -20,6 +20,20 @@ enum AttachmentMaterializerError: LocalizedError {
 }
 
 enum AttachmentMaterializer {
+    static func directlyAvailableFile(
+        for candidate: IndexedMailAttachmentCandidate
+    ) -> URL? {
+        guard !candidate.sourcePath.isEmpty else { return nil }
+        let sourceURL = URL(fileURLWithPath: candidate.sourcePath)
+        let lowerName = sourceURL.lastPathComponent.lowercased()
+        guard candidate.attachmentIdentifier == "file" ||
+                (!lowerName.hasSuffix(".emlx") && !lowerName.hasSuffix(".partial.emlx")),
+              isCompleteFile(at: sourceURL, candidate: candidate) else {
+            return nil
+        }
+        return sourceURL
+    }
+
     static func materialize(
         _ candidate: IndexedMailAttachmentCandidate,
         to destination: URL,

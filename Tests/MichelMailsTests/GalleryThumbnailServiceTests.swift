@@ -207,3 +207,76 @@ func persistentAttachmentThumbnail() async throws {
     )
     #expect(try Data(contentsOf: materializedURL) == data)
 }
+
+@Test("Missing previews wait for the user without contacting Mail")
+@MainActor
+func missingPreviewDoesNotStartRemoteDownload() {
+    let candidate = IndexedMailAttachmentCandidate(
+        messageIdentifier: "remote-message",
+        localIdentifier: "900",
+        sender: "Michel",
+        subject: "Remote picture",
+        preview: "",
+        receivedAt: Date(),
+        accountName: "Google",
+        mailboxName: "Inbox",
+        attachmentIdentifier: "index-1",
+        attachmentName: "remote.jpg",
+        MIMEType: "image/jpeg",
+        sizeBytes: 12_000,
+        kind: .image
+    )
+    let manager = AttachmentDownloadManager()
+
+    manager.prepareThumbnails([candidate])
+
+    #expect(manager.record(for: candidate)?.state == .available)
+    #expect(manager.record(for: candidate)?.allowsMailDownload == false)
+    #expect(manager.activeCount == 0)
+    #expect(manager.queuedCount == 0)
+    #expect(manager.items.isEmpty)
+}
+
+@Test("Original attachment cache expires files after thirty days")
+func temporaryOriginalRetention() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sourceURL = root.appendingPathComponent("source.pdf")
+    let sourceData = Data(repeating: 7, count: 512)
+    try sourceData.write(to: sourceURL)
+    let cacheRoot = root.appendingPathComponent("Originals", isDirectory: true)
+    let candidate = IndexedMailAttachmentCandidate(
+        messageIdentifier: "cached-message",
+        localIdentifier: "901",
+        sender: "Raffi",
+        subject: "Document",
+        preview: "",
+        receivedAt: Date(),
+        accountName: "Google",
+        mailboxName: "Inbox",
+        attachmentIdentifier: "index-1",
+        attachmentName: "source.pdf",
+        MIMEType: "application/pdf",
+        sizeBytes: Int64(sourceData.count),
+        kind: .pdf
+    )
+
+    let cachedURL = try PersistentAttachmentStore.store(
+        sourceURL,
+        candidate: candidate,
+        rootDirectory: cacheRoot
+    )
+    #expect(try Data(contentsOf: cachedURL) == sourceData)
+
+    let oldDate = Date().addingTimeInterval(-PersistentAttachmentStore.retentionInterval - 60)
+    try FileManager.default.setAttributes(
+        [.modificationDate: oldDate],
+        ofItemAtPath: cachedURL.path
+    )
+    try PersistentAttachmentStore.cleanupExpired(rootDirectory: cacheRoot)
+
+    #expect(!FileManager.default.fileExists(atPath: cachedURL.path))
+}

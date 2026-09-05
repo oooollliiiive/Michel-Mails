@@ -250,8 +250,21 @@ private struct EmailAttachmentThumbnail: View {
                     .foregroundStyle(Color.accentColor)
                 }
                 .buttonStyle(.plain)
+            } else if record == nil || record?.state == .available {
+                Button {
+                    downloadManager.downloadForPreview(candidate)
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 24, weight: .medium))
+                        Text("Download")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
             } else {
-                AttachmentDownloadIndicator(state: record?.state ?? .queued)
+                AttachmentDownloadIndicator(state: record?.state ?? .available)
                     .frame(width: 30, height: 30)
             }
         }

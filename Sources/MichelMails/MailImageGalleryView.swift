@@ -82,6 +82,7 @@ struct MailImageGalleryView: View {
                         }
                     }
                     .padding(gridPadding)
+                    .background(HorizontalMouseWheelSupport())
                 }
                 .coordinateSpace(name: "MichelMailsGalleryScroll")
                 .onPreferenceChange(GalleryCardFramePreferenceKey.self) { frames in
@@ -384,14 +385,14 @@ struct MailImageGalleryView: View {
             openFile(item)
         }
         .onDrag {
-            guard hasCompleteOriginal(item) else {
+            guard let originalURL = completeOriginalURL(item) else {
                 if let candidate = item.sourceCandidate {
                     downloadManager.downloadAttachmentsToDesktop([candidate])
                     showTransientMessage("Download queued in Files from Mails.")
                 }
                 return NSItemProvider()
             }
-            return NSItemProvider(contentsOf: item.cachedURL) ?? NSItemProvider()
+            return NSItemProvider(contentsOf: originalURL) ?? NSItemProvider()
         }
         .contextMenu {
             Button("Open File") {
@@ -514,16 +515,20 @@ struct MailImageGalleryView: View {
         pasteboard.clearContents()
 
         let didCopy: Bool
-        if items.count == 1, let item = items.first {
+        if items.count == 1,
+           let item = items.first,
+           let originalURL = completeOriginalURL(item) {
             let pasteboardItem = NSPasteboardItem()
-            pasteboardItem.setString(item.cachedURL.absoluteString, forType: .fileURL)
-            if let image = NSImage(contentsOf: item.cachedURL),
+            pasteboardItem.setString(originalURL.absoluteString, forType: .fileURL)
+            if let image = NSImage(contentsOf: originalURL),
                let TIFFData = image.tiffRepresentation {
                 pasteboardItem.setData(TIFFData, forType: .tiff)
             }
             didCopy = pasteboard.writeObjects([pasteboardItem])
         } else {
-            didCopy = pasteboard.writeObjects(items.map { $0.cachedURL as NSURL })
+            didCopy = pasteboard.writeObjects(
+                items.compactMap(completeOriginalURL).map { $0 as NSURL }
+            )
         }
 
         if didCopy {
@@ -545,8 +550,8 @@ struct MailImageGalleryView: View {
     }
 
     private func openFile(_ item: MailImageItem) {
-        if hasCompleteOriginal(item) {
-            NSWorkspace.shared.open(item.cachedURL)
+        if let originalURL = completeOriginalURL(item) {
+            NSWorkspace.shared.open(originalURL)
         } else if let candidate = item.sourceCandidate {
             downloadManager.openAttachment(candidate)
             showTransientMessage("Downloading the original file…")
@@ -554,12 +559,25 @@ struct MailImageGalleryView: View {
     }
 
     private func hasCompleteOriginal(_ item: MailImageItem) -> Bool {
-        guard item.hasOriginalFile,
-              FileManager.default.fileExists(atPath: item.cachedURL.path),
-              let size = try? item.cachedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size > 0 else { return false }
-        guard let candidate = item.sourceCandidate else { return true }
-        return AttachmentMaterializer.isCompleteFile(at: item.cachedURL, candidate: candidate)
+        completeOriginalURL(item) != nil
+    }
+
+    private func completeOriginalURL(_ item: MailImageItem) -> URL? {
+        let originalURL: URL
+        if let candidate = item.sourceCandidate,
+           let managedURL = downloadManager.originalURL(for: candidate) {
+            originalURL = managedURL
+        } else {
+            guard item.hasOriginalFile else { return nil }
+            originalURL = item.cachedURL
+        }
+        guard FileManager.default.fileExists(atPath: originalURL.path),
+              let size = try? originalURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size > 0 else { return nil }
+        guard let candidate = item.sourceCandidate else { return originalURL }
+        return AttachmentMaterializer.isCompleteFile(at: originalURL, candidate: candidate)
+            ? originalURL
+            : nil
     }
 
     private func displayDate(_ date: Date?) -> String {
@@ -617,6 +635,7 @@ private struct GalleryThumbnail: View {
             return item.cachedURL
         }
         return candidate.flatMap(downloadManager.thumbnailURL)
+            ?? candidate.flatMap(downloadManager.originalURL)
     }
 
     var body: some View {
@@ -659,11 +678,25 @@ private struct GalleryThumbnail: View {
                     .foregroundStyle(Color.accentColor)
                 }
                 .buttonStyle(.plain)
+            } else if let candidate,
+                      record == nil || record?.state == .available {
+                Button {
+                    downloadManager.downloadForPreview(candidate)
+                } label: {
+                    VStack(spacing: 7) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 30, weight: .medium))
+                        Text("Download preview")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
             } else {
                 VStack(spacing: 7) {
-                    AttachmentDownloadIndicator(state: record?.state ?? .queued)
+                    AttachmentDownloadIndicator(state: record?.state ?? .available)
                         .frame(width: 34, height: 34)
-                    Text(record?.state == .downloading ? "Downloading…" : "Waiting to download…")
+                    Text(record?.state == .downloading ? "Preparing preview…" : "Waiting…")
                         .font(.caption2)
                 }
                 .foregroundStyle(.secondary)

@@ -140,6 +140,7 @@ struct MailImageItem: Identifiable, Equatable, Sendable {
 }
 
 enum AttachmentTransferState: String, Equatable, Sendable {
+    case available
     case queued
     case downloading
     case ready
@@ -152,8 +153,11 @@ struct AttachmentTransferRecord: Identifiable, Equatable, Sendable {
     var state: AttachmentTransferState
     var thumbnailURL: URL?
     var exportedURL: URL?
+    var exportDirectoryURL: URL?
     var needsThumbnail: Bool
     var needsExport: Bool
+    var allowsMailDownload = false
+    var isVisibleInDownloads = false
     var openWhenReady = false
     var errorMessage: String?
 }

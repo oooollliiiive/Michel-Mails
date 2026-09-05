@@ -304,20 +304,10 @@ final class SearchViewModel: ObservableObject {
         }
 
         self.pendingCopy = nil
-        isWorking = true
-        statusText = "Copying images…"
-
-        Task {
-            defer { isWorking = false }
-            let result = await mailService.copyAttachments(
-                pendingCopy.candidates,
-                to: destination
-            )
-            statusText = result.imageCount == 1
-                ? "1 image copied to \(destination.lastPathComponent)."
-                : "\(result.imageCount) images copied to \(destination.lastPathComponent)."
-            NSWorkspace.shared.activateFileViewerSelecting([destination])
-        }
+        downloadManager.downloadAttachments(pendingCopy.candidates, to: destination)
+        statusText = pendingCopy.candidates.count == 1
+            ? "1 image queued for \(destination.lastPathComponent)."
+            : "\(pendingCopy.candidates.count) images queued for \(destination.lastPathComponent)."
     }
 
     func cancelCopy() {
