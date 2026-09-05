@@ -2,6 +2,18 @@ import Foundation
 import Testing
 @testable import MichelMails
 
+@Test("Mail URLs preserve the complete RFC Message-ID")
+func mailMessageURL() throws {
+    let identifier = "07D262EA-F821-43C1-B8D7-AA09F03EFB44@mac.com"
+    let URL = try #require(MailService.messageURL(for: identifier))
+    #expect(
+        URL.absoluteString ==
+            "message://%3C07D262EA%2DF821%2D43C1%2DB8D7%2DAA09F03EFB44%40mac%2Ecom%3E"
+    )
+    #expect(MailService.messageURL(for: "<\(identifier)>") == URL)
+    #expect(MailService.messageURL(for: "730") == nil)
+}
+
 @Test("French copy prompt extracts sender, images, all results, and destination")
 func frenchPromptWithTypoAndImageCopy() {
     let query = LocalQueryInterpreter().interpret(

@@ -125,13 +125,28 @@ final class MailService {
         }
 
         let identifier = message.reference.messageIdentifier
-        if !identifier.isEmpty,
-           let encoded = identifier.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
-           let messageURL = URL(string: "message://\(encoded)"),
+        if let messageURL = Self.messageURL(for: identifier),
            NSWorkspace.shared.open(messageURL) {
             return
         }
         throw MichelMailsError.mail("The original email could not be opened.")
+    }
+
+    nonisolated static func messageURL(for identifier: String) -> URL? {
+        var normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.hasPrefix("<") { normalized.removeFirst() }
+        if normalized.hasSuffix(">") { normalized.removeLast() }
+        normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Apple Mail's message:// handler expects the complete RFC Message-ID,
+        // including its angle brackets. Opening a bare ID is accepted by
+        // NSWorkspace but Mail later rejects it with MCMailErrorDomain 1030.
+        guard !normalized.isEmpty, normalized.contains("@"),
+              let encoded = "<\(normalized)>"
+                .addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+            return nil
+        }
+        return URL(string: "message://\(encoded)")
     }
 
     private nonisolated static func extract(
