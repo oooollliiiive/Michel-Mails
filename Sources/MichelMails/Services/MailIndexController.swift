@@ -6,6 +6,8 @@ final class MailIndexController: ObservableObject {
     @Published private(set) var progress = MailScanProgress()
     @Published private(set) var isAvailable = true
     @Published private(set) var forceScanEnabled = false
+    @Published private(set) var scanActivityText = "Preparing email scan…"
+    @Published private(set) var lastScanErrorText = "No scan errors."
 
     private var scanTask: Task<Void, Never>?
     private var database: MailIndexDatabase?
@@ -59,6 +61,8 @@ final class MailIndexController: ObservableObject {
                 isAvailable = true
             } catch {
                 isAvailable = false
+                scanActivityText = "Reconnecting to the local email index…"
+                lastScanErrorText = Self.shortError(error)
                 try? await Task.sleep(nanoseconds: forceScanEnabled ? 250_000_000 : 2_000_000_000)
                 continue
             }
@@ -68,22 +72,43 @@ final class MailIndexController: ObservableObject {
                 // than 100,000 mailbox entries can take minutes and must never
                 // block an existing scan at launch.
                 var state = try await activeDatabase.state(total: 0)
-                if state.progress.total == 0 || state.progress.isFinished {
+                if state.progress.total == 0 ||
+                    (state.progress.isFinished && state.progress.phase == .content) {
+                    scanActivityText = "Counting messages in Mail…"
                     let latestTotal = try await source.totalMessageCount(timeout: 180)
                     state = try await activeDatabase.state(total: latestTotal)
                 }
                 isAvailable = true
                 progress = state.progress
-                var consecutiveBatchFailures = 0
+                var isolatedMessagesRemaining = 0
 
-                while !Task.isCancelled && !progress.isFinished {
+                while !Task.isCancelled {
+                    if progress.isFinished {
+                        if progress.phase == .metadata {
+                            state = try await activeDatabase.beginContentPass(total: progress.total)
+                            progress = state.progress
+                            scanActivityText = "Metadata scan complete · starting email text indexing…"
+                            continue
+                        }
+                        scanActivityText = "Email scan complete · watching for new mail."
+                        break
+                    }
+
                     do {
                         let forceScan = forceScanEnabled
+                        let phase = progress.phase
+                        let baseSettings = Self.scanSettings(for: phase, forceScan: forceScan)
+                        let isIsolatingFailure = isolatedMessagesRemaining > 0
+                        let settings = isIsolatingFailure
+                            ? Self.isolatedScanSettings(for: phase)
+                            : baseSettings
+                        scanActivityText = Self.activityText(phase: phase, cursor: state.cursor)
                         let batch = try await source.batch(
                             from: state.cursor,
-                            maximumCount: forceScan ? 20 : 6,
-                            perMessageTimeout: forceScan ? 2 : 8,
-                            processTimeout: forceScan ? 50 : 60
+                            phase: phase,
+                            maximumCount: settings.maximumCount,
+                            perMessageTimeout: settings.perMessageTimeout,
+                            processTimeout: settings.processTimeout
                         )
                         progress = try await activeDatabase.save(
                             batch,
@@ -91,12 +116,22 @@ final class MailIndexController: ObservableObject {
                             previous: progress
                         )
                         state.cursor = batch.nextCursor
-                        consecutiveBatchFailures = 0
+                        if isIsolatingFailure {
+                            isolatedMessagesRemaining = max(
+                                0,
+                                isolatedMessagesRemaining - max(batch.attemptedCount, 1)
+                            )
+                        }
+                        scanActivityText = Self.progressText(
+                            phase: phase,
+                            cursor: batch.nextCursor
+                        )
                     } catch {
-                        consecutiveBatchFailures += 1
-                        if consecutiveBatchFailures >= 1 {
+                        let failedCursor = state.cursor
+                        lastScanErrorText = "Mailbox \(failedCursor.mailboxIndex), email \(failedCursor.messageIndex): \(Self.shortError(error))"
+                        if isolatedMessagesRemaining > 0 {
                             // A broken message must never stop the queue. Advance one
-                            // position after bounded retries and continue immediately.
+                            // position only after an isolated one-message attempt fails.
                             let nextCursor = MailScanCursor(
                                 mailboxIndex: state.cursor.mailboxIndex,
                                 messageIndex: state.cursor.messageIndex + 1
@@ -106,7 +141,8 @@ final class MailIndexController: ObservableObject {
                                 nextCursor: nextCursor,
                                 attemptedCount: 1,
                                 failureCount: 1,
-                                isFinished: false
+                                isFinished: false,
+                                phase: progress.phase
                             )
                             progress = try await activeDatabase.save(
                                 skipped,
@@ -114,7 +150,18 @@ final class MailIndexController: ObservableObject {
                                 previous: progress
                             )
                             state.cursor = nextCursor
-                            consecutiveBatchFailures = 0
+                            isolatedMessagesRemaining = max(0, isolatedMessagesRemaining - 1)
+                            scanActivityText = "Skipped one unreadable email · continuing immediately…"
+                        } else {
+                            // A failed multi-message batch does not reveal which item
+                            // caused it. Retry that range one-by-one so readable emails
+                            // are never discarded with the bad one.
+                            let settings = Self.scanSettings(
+                                for: progress.phase,
+                                forceScan: forceScanEnabled
+                            )
+                            isolatedMessagesRemaining = settings.maximumCount
+                            scanActivityText = "A batch stalled · isolating the unreadable email…"
                         }
                         try? await Task.sleep(nanoseconds: forceScanEnabled ? 20_000_000 : 500_000_000)
                     }
@@ -132,12 +179,49 @@ final class MailIndexController: ObservableObject {
                 // durable cursor and reconnect instead of disabling the scanner.
                 database = nil
                 isAvailable = false
+                scanActivityText = "Reconnecting to the local email index…"
+                lastScanErrorText = Self.shortError(error)
                 try? await Task.sleep(
                     nanoseconds: forceScanEnabled ? 250_000_000 : 2_000_000_000
                 )
             }
         }
         scanTask = nil
+    }
+
+    private static func scanSettings(
+        for phase: MailScanPhase,
+        forceScan: Bool
+    ) -> (maximumCount: Int, perMessageTimeout: Int, processTimeout: TimeInterval) {
+        switch (phase, forceScan) {
+        case (.metadata, true): return (30, 2, 10)
+        case (.metadata, false): return (8, 5, 20)
+        case (.content, true): return (5, 2, 10)
+        case (.content, false): return (2, 5, 12)
+        }
+    }
+
+    private static func isolatedScanSettings(
+        for phase: MailScanPhase
+    ) -> (maximumCount: Int, perMessageTimeout: Int, processTimeout: TimeInterval) {
+        phase == .metadata ? (1, 2, 3) : (1, 2, 4)
+    }
+
+    private static func activityText(phase: MailScanPhase, cursor: MailScanCursor) -> String {
+        let action = phase == .metadata ? "Scanning metadata" : "Indexing email text"
+        return "\(action) · mailbox \(cursor.mailboxIndex), email \(cursor.messageIndex)…"
+    }
+
+    private static func progressText(phase: MailScanPhase, cursor: MailScanCursor) -> String {
+        let action = phase == .metadata ? "Metadata saved" : "Email text saved"
+        let time = Date.now.formatted(date: .omitted, time: .standard)
+        return "\(action) at \(time) · next: mailbox \(cursor.mailboxIndex), email \(cursor.messageIndex)"
+    }
+
+    private static func shortError(_ error: Error) -> String {
+        let text = (error as? MichelMailsError)?.errorDescription ?? error.localizedDescription
+        let singleLine = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return String(singleLine.prefix(180))
     }
 }
 
@@ -163,6 +247,7 @@ private actor MailScanSource {
 
     func batch(
         from cursor: MailScanCursor,
+        phase: MailScanPhase,
         maximumCount: Int,
         perMessageTimeout: Int,
         processTimeout: TimeInterval
@@ -173,7 +258,8 @@ private actor MailScanSource {
                 String(cursor.mailboxIndex),
                 String(cursor.messageIndex),
                 String(max(maximumCount, 1)),
-                String(max(perMessageTimeout, 1))
+                String(max(perMessageTimeout, 1)),
+                phase.rawValue
             ],
             timeout: processTimeout
         )
@@ -227,7 +313,17 @@ private actor MailScanSource {
                         "Allow Michel Mails to control Mail in System Settings › Privacy & Security › Automation."
                     )
                 }
-                throw MichelMailsError.index("Mail skipped an unreadable scan batch.")
+                if process.terminationReason == .uncaughtSignal {
+                    throw MichelMailsError.index(
+                        "Mail did not answer within \(Int(timeout)) seconds; that email was skipped."
+                    )
+                }
+                let readableDetail = detail
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                if !readableDetail.isEmpty {
+                    throw MichelMailsError.index(String(readableDetail.prefix(160)))
+                }
+                throw MichelMailsError.index("Mail returned an unreadable scan batch.")
             }
             return output
         }.value
@@ -265,6 +361,7 @@ private actor MailScanSource {
         set messageIndex to (item 2 of argv) as integer
         set maximumCount to (item 3 of argv) as integer
         set perMessageTimeout to (item 4 of argv) as integer
+        set scanPhase to item 5 of argv as text
         set unitSeparator to ASCII character 31
         set recordSeparator to ASCII character 30
         set attachmentSeparator to ASCII character 29
@@ -275,11 +372,17 @@ private actor MailScanSource {
         set finishedScan to false
 
         set mailboxRecords to {}
+        set myAddresses to {}
         tell application "Mail"
             repeat with anAccount in every account
                 set accountName to ""
                 try
                     set accountName to name of anAccount as text
+                end try
+                try
+                    repeat with accountAddress in email addresses of anAccount
+                        set end of myAddresses to accountAddress as text
+                    end repeat
                 end try
                 repeat with aMailbox in every mailbox of anAccount
                     set end of mailboxRecords to {contents of aMailbox, accountName}
@@ -318,7 +421,7 @@ private actor MailScanSource {
                     try
                         with timeout of perMessageTimeout seconds
                             set aMessage to message messageIndex of targetMailbox
-                            set end of outputRows to my messageRow(aMessage, mailboxName, accountName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
+                            set end of outputRows to my messageRow(aMessage, mailboxName, accountName, scanPhase, myAddresses, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
                         end timeout
                     on error
                         set failureCount to failureCount + 1
@@ -329,12 +432,12 @@ private actor MailScanSource {
         end repeat
 
         if mailboxIndex > (count of mailboxRecords) then set finishedScan to true
-        set headerRow to "H" & unitSeparator & mailboxIndex & unitSeparator & messageIndex & unitSeparator & (finishedScan as text) & unitSeparator & attemptedCount & unitSeparator & failureCount
+        set headerRow to "H" & unitSeparator & mailboxIndex & unitSeparator & messageIndex & unitSeparator & (finishedScan as text) & unitSeparator & attemptedCount & unitSeparator & failureCount & unitSeparator & scanPhase
         if (count of outputRows) is 0 then return headerRow
         return headerRow & recordSeparator & my joinRows(outputRows, recordSeparator)
     end run
 
-    on messageRow(aMessage, mailboxName, accountName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
+    on messageRow(aMessage, mailboxName, accountName, scanPhase, myAddresses, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
         set messageIdentifier to ""
         set localIdentifier to ""
         set senderText to ""
@@ -344,6 +447,7 @@ private actor MailScanSource {
         set receivedText to ""
         set sizeBytes to 0
         set isSentMessage to false
+        set bodyWasScanned to false
         set attachmentRows to {}
 
         tell application "Mail"
@@ -353,96 +457,83 @@ private actor MailScanSource {
             try
                 set localIdentifier to id of aMessage as text
             end try
-            try
-                set senderText to sender of aMessage as text
-            end try
-            try
-                set recipientRows to {}
-                repeat with aRecipient in (every to recipient of aMessage)
-                    try
-                        set end of recipientRows to address of aRecipient as text
-                    end try
-                end repeat
-                repeat with aRecipient in (every cc recipient of aMessage)
-                    try
-                        set end of recipientRows to address of aRecipient as text
-                    end try
-                end repeat
-                set recipientText to my joinRows(recipientRows, ", ")
-            end try
-            try
-                set subjectText to subject of aMessage as text
-            end try
-            try
-                with timeout of 5 seconds
-                    set bodyText to content of aMessage as text
-                end timeout
-            end try
-            try
-                set receivedText to my ISODateText(date received of aMessage)
-            end try
-            try
-                set sizeBytes to message size of aMessage as integer
-            end try
-            set isSentMessage to my messageLooksSent(aMessage, mailboxName)
+            if scanPhase is "content" then
+                set bodyText to content of aMessage as text
+                set bodyWasScanned to true
+            else
+                try
+                    set senderText to sender of aMessage as text
+                end try
+                try
+                    set recipientRows to {}
+                    repeat with aRecipient in (every to recipient of aMessage)
+                        try
+                            set end of recipientRows to address of aRecipient as text
+                        end try
+                    end repeat
+                    repeat with aRecipient in (every cc recipient of aMessage)
+                        try
+                            set end of recipientRows to address of aRecipient as text
+                        end try
+                    end repeat
+                    set recipientText to my joinRows(recipientRows, ", ")
+                end try
+                try
+                    set subjectText to subject of aMessage as text
+                end try
+                try
+                    set receivedText to my ISODateText(date received of aMessage)
+                end try
+                try
+                    set sizeBytes to message size of aMessage as integer
+                end try
+                set isSentMessage to my messageLooksSent(senderText, mailboxName, myAddresses)
 
-            try
-                with timeout of 5 seconds
+                try
                     set messageAttachments to every mail attachment of aMessage
-                end timeout
-                repeat with anAttachment in messageAttachments
-                    set attachmentIdentifier to ""
-                    set attachmentName to ""
-                    set MIMEText to ""
-                    set attachmentSize to 0
-                    set downloadedState to false
-                    try
-                        set attachmentIdentifier to id of anAttachment as text
-                    end try
-                    try
-                        set attachmentName to name of anAttachment as text
-                    end try
-                    try
-                        set MIMEText to MIME type of anAttachment as text
-                    end try
-                    try
-                        set attachmentSize to file size of anAttachment as integer
-                    end try
-                    try
-                        set downloadedState to downloaded of anAttachment as boolean
-                    end try
+                    repeat with anAttachment in messageAttachments
+                        set attachmentIdentifier to ""
+                        set attachmentName to ""
+                        set MIMEText to ""
+                        set attachmentSize to 0
+                        try
+                            set attachmentIdentifier to id of anAttachment as text
+                        end try
+                        try
+                            set attachmentName to name of anAttachment as text
+                        end try
+                        try
+                            set MIMEText to MIME type of anAttachment as text
+                        end try
+                        try
+                            set attachmentSize to file size of anAttachment as integer
+                        end try
 
-                    ignoring case
-                        set imageState to MIMEText starts with "image/" or attachmentName ends with ".jpg" or attachmentName ends with ".jpeg" or attachmentName ends with ".png" or attachmentName ends with ".heic" or attachmentName ends with ".gif" or attachmentName ends with ".webp"
-                        set decorationState to attachmentName contains "signature" or attachmentName contains "logo" or attachmentName contains "spacer" or attachmentName contains "tracking" or attachmentName contains "icon"
-                    end ignoring
-                    set usefulImageState to imageState and not decorationState and attachmentSize ≥ 5000
+                        ignoring case
+                            set imageState to MIMEText starts with "image/" or attachmentName ends with ".jpg" or attachmentName ends with ".jpeg" or attachmentName ends with ".png" or attachmentName ends with ".heic" or attachmentName ends with ".gif" or attachmentName ends with ".webp"
+                            set decorationState to attachmentName contains "signature" or attachmentName contains "logo" or attachmentName contains "spacer" or attachmentName contains "tracking" or attachmentName contains "icon"
+                        end ignoring
+                        set usefulImageState to imageState and not decorationState and attachmentSize ≥ 5000
 
-                    set attachmentRow to my cleanField(attachmentIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & my cleanField(attachmentName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & my cleanField(MIMEText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & attachmentSize & attachmentFieldSeparator & (imageState as text) & attachmentFieldSeparator & (usefulImageState as text) & attachmentFieldSeparator & (downloadedState as text)
-                    set end of attachmentRows to attachmentRow
-                end repeat
-            end try
+                        set attachmentRow to my cleanField(attachmentIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & my cleanField(attachmentName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & my cleanField(MIMEText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & attachmentFieldSeparator & attachmentSize & attachmentFieldSeparator & (imageState as text) & attachmentFieldSeparator & (usefulImageState as text) & attachmentFieldSeparator & "false"
+                        set end of attachmentRows to attachmentRow
+                    end repeat
+                end try
+            end if
         end tell
 
-        return "M" & unitSeparator & my cleanField(messageIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(localIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(senderText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(recipientText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(subjectText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(bodyText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & sizeBytes & unitSeparator & receivedText & unitSeparator & my cleanField(mailboxName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(accountName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & (isSentMessage as text) & unitSeparator & my joinRows(attachmentRows, attachmentSeparator)
+        return "M" & unitSeparator & my cleanField(messageIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(localIdentifier, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(senderText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(recipientText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(subjectText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(bodyText, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & sizeBytes & unitSeparator & receivedText & unitSeparator & my cleanField(mailboxName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & my cleanField(accountName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator) & unitSeparator & (isSentMessage as text) & unitSeparator & (bodyWasScanned as text) & unitSeparator & my joinRows(attachmentRows, attachmentSeparator)
     end messageRow
 
-    on messageLooksSent(aMessage, mailboxName)
+    on messageLooksSent(senderText, mailboxName, myAddresses)
         ignoring case
             if mailboxName contains "sent" or mailboxName contains "envoy" or mailboxName contains "gesendet" or mailboxName contains "inviati" or mailboxName contains "enviados" then return true
         end ignoring
-        tell application "Mail"
-            try
-                set senderText to sender of aMessage as text
-                repeat with anAccount in every account
-                    repeat with accountAddress in email addresses of anAccount
-                        ignoring case
-                            if senderText contains (accountAddress as text) then return true
-                        end ignoring
-                    end repeat
-                end repeat
-            end try
-        end tell
+        repeat with accountAddress in myAddresses
+            ignoring case
+                if senderText contains (accountAddress as text) then return true
+            end ignoring
+        end repeat
         return false
     end messageLooksSent
 

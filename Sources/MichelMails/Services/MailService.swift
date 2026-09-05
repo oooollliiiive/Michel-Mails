@@ -50,26 +50,47 @@ final class MailService {
 
         let cacheDirectory = try prepareGalleryCache()
         var items: [MailImageItem] = []
-        for (offset, candidate) in candidates.enumerated() {
-            let targetURL = cacheDirectory.appendingPathComponent(
-                Self.cacheFileName(for: candidate, position: offset + 1)
-            )
-            if await extract(candidate, to: targetURL) {
-                let item = MailImageItem(
-                    cachedURL: targetURL,
-                    displayName: candidate.attachmentName.isEmpty ? "Untitled file" : candidate.attachmentName,
-                    MIMEType: candidate.MIMEType,
-                    kind: candidate.kind,
-                    message: candidate.message
-                )
-                if item.kind != .image || Self.isUsefulVisualAttachment(at: targetURL) {
-                    items.append(item)
+        let indexedCandidates = Array(candidates.enumerated())
+        for chunkStart in stride(from: 0, to: indexedCandidates.count, by: 12) {
+            let chunkEnd = min(chunkStart + 12, indexedCandidates.count)
+            let chunk = Array(indexedCandidates[chunkStart..<chunkEnd])
+            let chunkItems = await withTaskGroup(
+                of: (Int, MailImageItem?).self,
+                returning: [(Int, MailImageItem?)].self
+            ) { group in
+                for (offset, candidate) in chunk {
+                    group.addTask { @MainActor in
+                        let targetURL = cacheDirectory.appendingPathComponent(
+                            Self.cacheFileName(for: candidate, position: offset + 1)
+                        )
+                        guard await Self.extract(candidate, to: targetURL) else {
+                            return (offset, nil)
+                        }
+                        let item = MailImageItem(
+                            cachedURL: targetURL,
+                            displayName: candidate.attachmentName.isEmpty
+                                ? "Untitled file"
+                                : candidate.attachmentName,
+                            MIMEType: candidate.MIMEType,
+                            kind: candidate.kind,
+                            message: candidate.message
+                        )
+                        guard item.kind != .image || Self.isUsefulVisualAttachment(at: targetURL) else {
+                            return (offset, nil)
+                        }
+                        return (offset, item)
+                    }
                 }
+                var results: [(Int, MailImageItem?)] = []
+                for await result in group { results.append(result) }
+                return results
             }
+            items.append(contentsOf: chunkItems.sorted { $0.0 < $1.0 }.compactMap(\.1))
         }
         return MailImageGallery(
             items: items,
-            query: fileQuery
+            query: fileQuery,
+            attemptedCount: candidates.count
         )
     }
 
@@ -83,7 +104,7 @@ final class MailService {
             let requestedName = candidate.attachmentName.isEmpty ? "Untitled file" : candidate.attachmentName
             let proposedURL = destination.appendingPathComponent(requestedName)
             let targetURL = availableURL(for: proposedURL, position: offset + 1)
-            if await extract(candidate, to: targetURL) {
+            if await Self.extract(candidate, to: targetURL) {
                 copiedCount += 1
                 messageKeys.insert(candidate.messageIdentifier + "|" + candidate.localIdentifier)
             }
@@ -113,7 +134,7 @@ final class MailService {
         throw MichelMailsError.mail("The original email could not be opened.")
     }
 
-    private func extract(
+    private static func extract(
         _ candidate: IndexedMailAttachmentCandidate,
         to destination: URL
     ) async -> Bool {

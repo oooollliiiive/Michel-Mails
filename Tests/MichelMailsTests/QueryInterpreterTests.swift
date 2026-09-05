@@ -156,9 +156,10 @@ func scanRecordParsing() {
         "M", "message-9", "909", "Michel", "me@example.com", "Files",
         "Every word of the complete email body remains searchable", "3123456",
         "2026-09-04T10:11:12", "Inbox", "Google", "false",
+        "true",
         firstAttachment + attachment + secondAttachment
     ].joined(separator: unit)
-    let header = ["H", "2", "18", "false", "1", "0"].joined(separator: unit)
+    let header = ["H", "2", "18", "false", "1", "0", "metadata"].joined(separator: unit)
 
     let batch = MailScanRecordParser.parse(header + record + message)
 
@@ -167,6 +168,96 @@ func scanRecordParsing() {
     #expect(batch?.messages[0].sizeBytes == 3_123_456)
     #expect(batch?.messages[0].attachments[0].sizeBytes == 2_300_000)
     #expect(batch?.messages[0].attachments[1].isUsefulImage == true)
+    #expect(batch?.messages[0].bodyWasScanned == true)
+    #expect(batch?.phase == .metadata)
+}
+
+@Test("Metadata becomes searchable immediately and later body indexing preserves attachments")
+func splitMetadataAndBodyIndexing() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let database = try MailIndexDatabase(databaseURL: directory.appendingPathComponent("split.sqlite"))
+    let attachment = IndexedMailAttachment(
+        identifier: "photo-1",
+        name: "garden.jpg",
+        MIMEType: "image/jpeg",
+        sizeBytes: 900_000,
+        isImage: true,
+        isUsefulImage: true,
+        isDownloaded: false
+    )
+    let metadata = IndexedMailMessage(
+        messageIdentifier: "split-message",
+        localIdentifier: "77",
+        sender: "Michel <michel@example.com>",
+        recipients: "me@example.com",
+        subject: "Garden pictures",
+        body: "",
+        receivedAt: Date(timeIntervalSince1970: 1_750_000_000),
+        sizeBytes: 1_000_000,
+        mailboxName: "Inbox",
+        accountName: "Google",
+        isSent: false,
+        attachments: [attachment],
+        bodyWasScanned: false
+    )
+    let metadataProgress = try await database.save(
+        MailScanBatch(
+            messages: [metadata],
+            nextCursor: MailScanCursor(mailboxIndex: 1, messageIndex: 2),
+            attemptedCount: 1,
+            failureCount: 0,
+            isFinished: true,
+            phase: .metadata
+        ),
+        total: 1,
+        previous: MailScanProgress(total: 1, phase: .metadata)
+    )
+    #expect(metadataProgress.isFinished)
+    #expect(metadataProgress.phase == .metadata)
+
+    var subjectQuery = MailQuery(sender: "Michel", keywords: ["garden"])
+    #expect(try await database.searchMessages(subjectQuery).items.count == 1)
+
+    let contentState = try await database.beginContentPass(total: 1)
+    #expect(contentState.progress.phase == .content)
+    let content = IndexedMailMessage(
+        messageIdentifier: "split-message",
+        localIdentifier: "77",
+        sender: "",
+        recipients: "",
+        subject: "",
+        body: "A uniquely searchable calico cat is sleeping.",
+        receivedAt: nil,
+        sizeBytes: 0,
+        mailboxName: "Inbox",
+        accountName: "Google",
+        isSent: false,
+        attachments: [],
+        bodyWasScanned: true
+    )
+    _ = try await database.save(
+        MailScanBatch(
+            messages: [content],
+            nextCursor: MailScanCursor(mailboxIndex: 2, messageIndex: 1),
+            attemptedCount: 1,
+            failureCount: 0,
+            isFinished: true,
+            phase: .content
+        ),
+        total: 1,
+        previous: contentState.progress
+    )
+
+    subjectQuery.sender = nil
+    subjectQuery.keywords = ["calico"]
+    #expect(try await database.searchMessages(subjectQuery).items.count == 1)
+    var imageQuery = MailQuery(action: .showImages, hasImage: true, hasAttachment: true)
+    imageQuery.attachmentKinds = [.image]
+    #expect(try await database.searchAttachments(imageQuery).count == 1)
 }
 
 @Test("The partial local index searches words, file kinds, and oldest order")

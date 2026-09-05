@@ -140,6 +140,19 @@ struct SearchView: View {
                         )
                 }
             }
+
+            HStack(spacing: 6) {
+                Spacer(minLength: 24)
+                Circle()
+                    .fill(indexController.isAvailable ? Color.secondary.opacity(0.55) : Color.orange)
+                    .frame(width: 5, height: 5)
+                Text(scanDiagnosticText)
+                    .font(.system(size: 9.5, weight: .regular, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(scanDiagnosticText)
+            }
+            .frame(height: 12)
         }
         .padding(.horizontal, 20)
         .padding(.top, 24)
@@ -178,6 +191,10 @@ struct SearchView: View {
             get: { viewModel.prompt },
             set: viewModel.updatePrompt
         )
+    }
+
+    private var scanDiagnosticText: String {
+        indexController.scanActivityText + " · Last issue: " + indexController.lastScanErrorText
     }
 
     private var historySuggestions: some View {

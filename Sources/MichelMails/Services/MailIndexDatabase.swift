@@ -46,6 +46,18 @@ actor MailIndexDatabase {
             "ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'other'",
             on: connection
         )
+        try? Self.execute(
+            "ALTER TABLE messages ADD COLUMN body_indexed INTEGER NOT NULL DEFAULT 0",
+            on: connection
+        )
+        try? Self.execute(
+            "ALTER TABLE scan_state ADD COLUMN phase TEXT NOT NULL DEFAULT 'metadata'",
+            on: connection
+        )
+        try Self.execute(
+            "UPDATE messages SET body_indexed = 1 WHERE body_indexed = 0 AND body <> ''",
+            on: connection
+        )
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path)
     }
 
@@ -55,7 +67,7 @@ actor MailIndexDatabase {
 
     func state(total latestTotal: Int) throws -> (progress: MailScanProgress, cursor: MailScanCursor) {
         guard let statement = try prepare(
-            "SELECT total, scanned, failures, cursor_mailbox, cursor_message, finished FROM scan_state WHERE id = 1"
+            "SELECT total, scanned, failures, cursor_mailbox, cursor_message, finished, phase FROM scan_state WHERE id = 1"
         ) else {
             throw MichelMailsError.index("The email scan state is unavailable.")
         }
@@ -70,6 +82,7 @@ actor MailIndexDatabase {
         var mailboxIndex = Int(sqlite3_column_int64(statement, 3))
         var messageIndex = Int(sqlite3_column_int64(statement, 4))
         var finished = sqlite3_column_int(statement, 5) == 1
+        var phase = MailScanPhase(rawValue: Self.text(at: 6, in: statement)) ?? .metadata
 
         if total == 0 {
             total = latestTotal
@@ -78,7 +91,8 @@ actor MailIndexDatabase {
                 scanned: 0,
                 failures: 0,
                 cursor: MailScanCursor(mailboxIndex: 1, messageIndex: 1),
-                finished: total == 0
+                finished: total == 0,
+                phase: .metadata
             )
         } else if latestTotal > total && finished {
             // A new full pass discovers new messages while retaining every
@@ -88,12 +102,14 @@ actor MailIndexDatabase {
             mailboxIndex = 1
             messageIndex = 1
             finished = false
+            phase = .metadata
             try updateState(
                 total: total,
                 scanned: scanned,
                 failures: failures,
                 cursor: MailScanCursor(mailboxIndex: mailboxIndex, messageIndex: messageIndex),
-                finished: false
+                finished: false,
+                phase: phase
             )
         } else if latestTotal > total {
             total = latestTotal
@@ -101,8 +117,36 @@ actor MailIndexDatabase {
         }
 
         return (
-            MailScanProgress(scanned: scanned, total: total, failures: failures, isFinished: finished),
+            MailScanProgress(
+                scanned: scanned,
+                total: total,
+                failures: failures,
+                isFinished: finished,
+                phase: phase
+            ),
             MailScanCursor(mailboxIndex: mailboxIndex, messageIndex: messageIndex)
+        )
+    }
+
+    func beginContentPass(total: Int) throws -> (progress: MailScanProgress, cursor: MailScanCursor) {
+        let cursor = MailScanCursor(mailboxIndex: 1, messageIndex: 1)
+        try updateState(
+            total: total,
+            scanned: 0,
+            failures: 0,
+            cursor: cursor,
+            finished: total == 0,
+            phase: .content
+        )
+        return (
+            MailScanProgress(
+                scanned: 0,
+                total: total,
+                failures: 0,
+                isFinished: total == 0,
+                phase: .content
+            ),
+            cursor
         )
     }
 
@@ -113,7 +157,11 @@ actor MailIndexDatabase {
             for message in batch.messages {
                 try execute("SAVEPOINT message_write")
                 do {
-                    try upsert(message)
+                    if batch.phase == .metadata {
+                        try upsertMetadata(message)
+                    } else {
+                        try updateBody(message)
+                    }
                     try execute("RELEASE message_write")
                 } catch {
                     try? execute("ROLLBACK TO message_write")
@@ -129,14 +177,16 @@ actor MailIndexDatabase {
                 scanned: scanned,
                 failures: failures,
                 cursor: batch.nextCursor,
-                finished: finished
+                finished: finished,
+                phase: batch.phase
             )
             try execute("COMMIT")
             return MailScanProgress(
                 scanned: scanned,
                 total: total,
                 failures: failures,
-                isFinished: finished
+                isFinished: finished,
+                phase: batch.phase
             )
         } catch {
             try? execute("ROLLBACK")
@@ -341,22 +391,21 @@ actor MailIndexDatabase {
         return candidates
     }
 
-    private func upsert(_ message: IndexedMailMessage) throws {
-        let attachmentNames = message.attachments.map(\.name).joined(separator: " ")
+    private func upsertMetadata(_ message: IndexedMailMessage) throws {
         try run(
             """
             INSERT INTO messages (
                 message_key, message_identifier, local_identifier, sender, recipients,
                 subject, body, received_at, size_bytes, mailbox_name, account_name,
-                is_sent, has_attachment, has_useful_image, indexed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_sent, has_attachment, has_useful_image, indexed_at, body_indexed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_key) DO UPDATE SET
                 message_identifier = excluded.message_identifier,
                 local_identifier = excluded.local_identifier,
                 sender = excluded.sender,
                 recipients = excluded.recipients,
                 subject = excluded.subject,
-                body = excluded.body,
+                body = CASE WHEN excluded.body_indexed = 1 THEN excluded.body ELSE messages.body END,
                 received_at = excluded.received_at,
                 size_bytes = excluded.size_bytes,
                 mailbox_name = excluded.mailbox_name,
@@ -364,7 +413,8 @@ actor MailIndexDatabase {
                 is_sent = excluded.is_sent,
                 has_attachment = excluded.has_attachment,
                 has_useful_image = excluded.has_useful_image,
-                indexed_at = excluded.indexed_at
+                indexed_at = excluded.indexed_at,
+                body_indexed = MAX(messages.body_indexed, excluded.body_indexed)
             """,
             bindings: [
                 .text(message.key), .text(message.messageIdentifier), .text(message.localIdentifier),
@@ -373,7 +423,7 @@ actor MailIndexDatabase {
                 .integer(message.sizeBytes), .text(message.mailboxName), .text(message.accountName),
                 .integer(message.isSent ? 1 : 0), .integer(message.attachments.isEmpty ? 0 : 1),
                 .integer(message.attachments.contains(where: \.isUsefulImage) ? 1 : 0),
-                .double(Date().timeIntervalSince1970)
+                .double(Date().timeIntervalSince1970), .integer(message.bodyWasScanned ? 1 : 0)
             ]
         )
 
@@ -398,13 +448,30 @@ actor MailIndexDatabase {
             )
         }
 
-        try run("DELETE FROM messages_fts WHERE message_key = ?", bindings: [.text(message.key)])
+        try refreshFTS(messageKey: message.key)
+    }
+
+    private func updateBody(_ message: IndexedMailMessage) throws {
+        guard message.bodyWasScanned else { return }
         try run(
-            "INSERT INTO messages_fts (message_key, sender, recipients, subject, body, attachment_names) VALUES (?, ?, ?, ?, ?, ?)",
+            "UPDATE messages SET body = ?, body_indexed = 1, indexed_at = ? WHERE message_key = ?",
             bindings: [
-                .text(message.key), .text(message.sender), .text(message.recipients),
-                .text(message.subject), .text(message.body), .text(attachmentNames)
+                .text(message.body), .double(Date().timeIntervalSince1970), .text(message.key)
             ]
+        )
+        try refreshFTS(messageKey: message.key)
+    }
+
+    private func refreshFTS(messageKey: String) throws {
+        try run("DELETE FROM messages_fts WHERE message_key = ?", bindings: [.text(messageKey)])
+        try run(
+            """
+            INSERT INTO messages_fts (message_key, sender, recipients, subject, body, attachment_names)
+            SELECT m.message_key, m.sender, m.recipients, m.subject, m.body,
+                   COALESCE((SELECT group_concat(a.name, ' ') FROM attachments a WHERE a.message_key = m.message_key), '')
+            FROM messages m WHERE m.message_key = ?
+            """,
+            bindings: [.text(messageKey)]
         )
     }
 
@@ -413,17 +480,18 @@ actor MailIndexDatabase {
         scanned: Int,
         failures: Int,
         cursor: MailScanCursor,
-        finished: Bool
+        finished: Bool,
+        phase: MailScanPhase
     ) throws {
         try run(
             """
             UPDATE scan_state SET total = ?, scanned = ?, failures = ?, cursor_mailbox = ?,
-                cursor_message = ?, finished = ?, updated_at = ? WHERE id = 1
+                cursor_message = ?, finished = ?, updated_at = ?, phase = ? WHERE id = 1
             """,
             bindings: [
                 .integer(Int64(total)), .integer(Int64(scanned)), .integer(Int64(failures)),
                 .integer(Int64(cursor.mailboxIndex)), .integer(Int64(cursor.messageIndex)),
-                .integer(finished ? 1 : 0), .double(Date().timeIntervalSince1970)
+                .integer(finished ? 1 : 0), .double(Date().timeIntervalSince1970), .text(phase.rawValue)
             ]
         )
     }
@@ -540,7 +608,8 @@ actor MailIndexDatabase {
         is_sent INTEGER NOT NULL,
         has_attachment INTEGER NOT NULL,
         has_useful_image INTEGER NOT NULL,
-        indexed_at REAL NOT NULL
+        indexed_at REAL NOT NULL,
+        body_indexed INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS messages_received_at ON messages(received_at);
     CREATE INDEX IF NOT EXISTS messages_size_bytes ON messages(size_bytes);
@@ -576,7 +645,8 @@ actor MailIndexDatabase {
         cursor_mailbox INTEGER NOT NULL DEFAULT 1,
         cursor_message INTEGER NOT NULL DEFAULT 1,
         finished INTEGER NOT NULL DEFAULT 0,
-        updated_at REAL NOT NULL DEFAULT 0
+        updated_at REAL NOT NULL DEFAULT 0,
+        phase TEXT NOT NULL DEFAULT 'metadata'
     );
     INSERT OR IGNORE INTO scan_state(id) VALUES(1);
     """

@@ -1,14 +1,21 @@
 import Foundation
 
+enum MailScanPhase: String, Equatable, Sendable {
+    case metadata
+    case content
+}
+
 struct MailScanProgress: Equatable, Sendable {
     var scanned = 0
     var total = 0
     var failures = 0
     var isFinished = false
+    var phase: MailScanPhase = .metadata
 
     var statusText: String {
         if total == 0 && !isFinished { return "Starting email scan…" }
-        let base = "\(scanned.formatted()) / \(total.formatted()) emails scanned"
+        let unit = phase == .metadata ? "emails scanned" : "email texts indexed"
+        let base = "\(scanned.formatted()) / \(total.formatted()) \(unit)"
         if failures > 0 {
             return "\(base) · \(failures.formatted()) skipped"
         }
@@ -44,6 +51,7 @@ struct IndexedMailMessage: Equatable, Sendable {
     let accountName: String
     let isSent: Bool
     let attachments: [IndexedMailAttachment]
+    var bodyWasScanned: Bool = true
 
     var key: String {
         if !messageIdentifier.isEmpty { return "message:\(messageIdentifier)" }
@@ -86,6 +94,7 @@ struct MailScanBatch: Equatable, Sendable {
     let attemptedCount: Int
     let failureCount: Int
     let isFinished: Bool
+    var phase: MailScanPhase = .metadata
 }
 
 enum MailScanRecordParser {
@@ -102,7 +111,7 @@ enum MailScanRecordParser {
                 $0.split(separator: unitSeparator, omittingEmptySubsequences: false).map(String.init)
             }
         guard let header = rows.first,
-              header.count == 6,
+              (header.count == 6 || header.count == 7),
               header[0] == "H",
               let mailboxIndex = Int(header[1]),
               let messageIndex = Int(header[2]),
@@ -111,22 +120,25 @@ enum MailScanRecordParser {
             return nil
         }
 
+        let phase = header.count == 7 ? MailScanPhase(rawValue: header[6]) ?? .metadata : .metadata
         return MailScanBatch(
             messages: rows.dropFirst().compactMap(parseMessage),
             nextCursor: MailScanCursor(mailboxIndex: mailboxIndex, messageIndex: messageIndex),
             attemptedCount: attemptedCount,
             failureCount: failureCount,
-            isFinished: header[3] == "true"
+            isFinished: header[3] == "true",
+            phase: phase
         )
     }
 
     private static func parseMessage(_ fields: [String]) -> IndexedMailMessage? {
-        guard fields.count == 13,
+        guard (fields.count == 13 || fields.count == 14),
               fields[0] == "M",
               let sizeBytes = Int64(fields[7]) else {
             return nil
         }
 
+        let hasBodyState = fields.count == 14
         return IndexedMailMessage(
             messageIdentifier: fields[1],
             localIdentifier: fields[2],
@@ -139,7 +151,8 @@ enum MailScanRecordParser {
             mailboxName: fields[9],
             accountName: fields[10],
             isSent: fields[11] == "true",
-            attachments: parseAttachments(fields[12])
+            attachments: parseAttachments(fields[hasBodyState ? 13 : 12]),
+            bodyWasScanned: hasBodyState ? fields[12] == "true" : true
         )
     }
 

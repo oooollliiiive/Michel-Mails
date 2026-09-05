@@ -9,7 +9,7 @@ final class PromptPanel: NSPanel {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let promptWidth: CGFloat = 720
-    private static let promptBaseHeight: CGFloat = 160
+    private static let promptBaseHeight: CGFloat = 184
     private static let historyHeaderHeight: CGFloat = 26
     private static let historyRowHeight: CGFloat = 34
     private static let historySpacing: CGFloat = 12

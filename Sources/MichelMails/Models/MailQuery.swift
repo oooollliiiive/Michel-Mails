@@ -86,6 +86,7 @@ struct MailImageGallery: Identifiable, Equatable, Sendable {
     let id = UUID()
     let items: [MailImageItem]
     let query: MailQuery
+    var attemptedCount = 0
 }
 
 struct MailMatchSummary: Equatable, Sendable {

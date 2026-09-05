@@ -93,7 +93,17 @@ final class SearchViewModel: ObservableObject {
                     statusText = parsedQuery.action == .showImages ? "Preparing images…" : "Preparing files…"
                     let gallery = try await galleryWithFuzzyFallback(parsedQuery)
                     if gallery.items.isEmpty {
-                        statusText = parsedQuery.action == .showImages ? "No images found." : "No files found."
+                        if gallery.attemptedCount > 0 {
+                            let noun = parsedQuery.action == .showImages ? "images" : "files"
+                            statusText = "\(gallery.attemptedCount) matching \(noun) found, but none could be displayed."
+                        } else if indexController.progress.phase == .metadata &&
+                                    !indexController.progress.isFinished {
+                            statusText = parsedQuery.action == .showImages
+                                ? "No images found in scanned emails yet."
+                                : "No files found in scanned emails yet."
+                        } else {
+                            statusText = parsedQuery.action == .showImages ? "No images found." : "No files found."
+                        }
                     } else {
                         onGalleryReady?(gallery)
                         let noun = parsedQuery.action == .showImages ? "image" : "file"
@@ -106,7 +116,10 @@ final class SearchViewModel: ObservableObject {
                     let result = try await imageSummaryWithFuzzyFallback(parsedQuery)
                     let summary = result.summary
                     if summary.imageCount == 0 {
-                        statusText = "No images found."
+                        statusText = indexController.progress.phase == .metadata &&
+                            !indexController.progress.isFinished
+                            ? "No images found in scanned emails yet."
+                            : "No images found."
                     } else {
                         pendingCopy = PendingCopy(
                             query: result.query,
