@@ -4,9 +4,11 @@ import Foundation
 final class MailIndexController: ObservableObject {
     @Published private(set) var progress = MailScanProgress()
     @Published private(set) var isAvailable = true
+    @Published private(set) var forceScanEnabled = false
 
     private var scanTask: Task<Void, Never>?
     private var database: MailIndexDatabase?
+    private let source = MailScanSource()
 
     func start() {
         guard scanTask == nil else { return }
@@ -18,6 +20,18 @@ final class MailIndexController: ObservableObject {
     func stop() {
         scanTask?.cancel()
         scanTask = nil
+        Task { await source.cancelCurrentBatch() }
+    }
+
+    func setForceScan(_ enabled: Bool) {
+        forceScanEnabled = enabled
+        Task { await source.cancelCurrentBatch() }
+        if enabled {
+            if scanTask == nil {
+                isAvailable = true
+                start()
+            }
+        }
     }
 
     func searchMessages(_ query: MailQuery) async throws -> MailSearchResults? {
@@ -34,7 +48,6 @@ final class MailIndexController: ObservableObject {
         do {
             let database = try MailIndexDatabase()
             self.database = database
-            let source = MailScanSource()
             while !Task.isCancelled {
                 let total = try await source.totalMessageCount()
                 var state = try await database.state(total: total)
@@ -43,13 +56,19 @@ final class MailIndexController: ObservableObject {
 
                 while !Task.isCancelled && !progress.isFinished {
                     do {
-                        let batch = try await source.batch(from: state.cursor, maximumCount: 24)
+                        let forceScan = forceScanEnabled
+                        let batch = try await source.batch(
+                            from: state.cursor,
+                            maximumCount: forceScan ? 20 : 6,
+                            perMessageTimeout: forceScan ? 2 : 8,
+                            processTimeout: forceScan ? 50 : 60
+                        )
                         progress = try await database.save(batch, total: progress.total, previous: progress)
                         state.cursor = batch.nextCursor
                         consecutiveBatchFailures = 0
                     } catch {
                         consecutiveBatchFailures += 1
-                        if consecutiveBatchFailures >= 3 {
+                        if consecutiveBatchFailures >= 1 {
                             // A broken message must never stop the queue. Advance one
                             // position after bounded retries and continue immediately.
                             let nextCursor = MailScanCursor(
@@ -71,7 +90,11 @@ final class MailIndexController: ObservableObject {
                             state.cursor = nextCursor
                             consecutiveBatchFailures = 0
                         }
-                        try? await Task.sleep(nanoseconds: 750_000_000)
+                        try? await Task.sleep(nanoseconds: forceScanEnabled ? 20_000_000 : 500_000_000)
+                    }
+
+                    if !forceScanEnabled {
+                        try? await Task.sleep(nanoseconds: 350_000_000)
                     }
                 }
 
@@ -86,6 +109,14 @@ final class MailIndexController: ObservableObject {
 }
 
 private actor MailScanSource {
+    private var currentProcess: Process?
+
+    func cancelCurrentBatch() {
+        if currentProcess?.isRunning == true {
+            currentProcess?.terminate()
+        }
+    }
+
     func totalMessageCount() async throws -> Int {
         let output = try await runAppleScript(Self.totalCountScript, arguments: [])
         guard let count = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
@@ -94,14 +125,21 @@ private actor MailScanSource {
         return count
     }
 
-    func batch(from cursor: MailScanCursor, maximumCount: Int) async throws -> MailScanBatch {
+    func batch(
+        from cursor: MailScanCursor,
+        maximumCount: Int,
+        perMessageTimeout: Int,
+        processTimeout: TimeInterval
+    ) async throws -> MailScanBatch {
         let output = try await runAppleScript(
             Self.batchScript,
             arguments: [
                 String(cursor.mailboxIndex),
                 String(cursor.messageIndex),
-                String(max(maximumCount, 1))
-            ]
+                String(max(maximumCount, 1)),
+                String(max(perMessageTimeout, 1))
+            ],
+            timeout: processTimeout
         )
         guard let batch = MailScanRecordParser.parse(output) else {
             throw MichelMailsError.index("Mail returned an unreadable scan batch.")
@@ -109,17 +147,32 @@ private actor MailScanSource {
         return batch
     }
 
-    private func runAppleScript(_ script: String, arguments: [String]) async throws -> String {
-        try await Task.detached(priority: .utility) {
-            let process = Process()
-            let standardOutput = Pipe()
-            let standardError = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e", script, "--"] + arguments
-            process.standardOutput = standardOutput
-            process.standardError = standardError
+    private func runAppleScript(
+        _ script: String,
+        arguments: [String],
+        timeout: TimeInterval = 30
+    ) async throws -> String {
+        let process = Process()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script, "--"] + arguments
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        currentProcess = process
+        defer {
+            if currentProcess === process { currentProcess = nil }
+        }
 
+        return try await Task.detached(priority: .utility) {
             try process.run()
+            let timeoutWorkItem = DispatchWorkItem {
+                if process.isRunning { process.terminate() }
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + timeout,
+                execute: timeoutWorkItem
+            )
             async let outputData = Task.detached {
                 standardOutput.fileHandleForReading.readDataToEndOfFile()
             }.value
@@ -127,6 +180,7 @@ private actor MailScanSource {
                 standardError.fileHandleForReading.readDataToEndOfFile()
             }.value
             process.waitUntilExit()
+            timeoutWorkItem.cancel()
 
             let output = String(data: await outputData, encoding: .utf8) ?? ""
             let error = String(data: await errorData, encoding: .utf8) ?? ""
@@ -164,6 +218,7 @@ private actor MailScanSource {
         set mailboxIndex to (item 1 of argv) as integer
         set messageIndex to (item 2 of argv) as integer
         set maximumCount to (item 3 of argv) as integer
+        set perMessageTimeout to (item 4 of argv) as integer
         set unitSeparator to ASCII character 31
         set recordSeparator to ASCII character 30
         set attachmentSeparator to ASCII character 29
@@ -215,8 +270,10 @@ private actor MailScanSource {
                 set attemptedCount to attemptedCount + 1
                 tell application "Mail"
                     try
-                        set aMessage to message messageIndex of targetMailbox
-                        set end of outputRows to my messageRow(aMessage, mailboxName, accountName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
+                        with timeout of perMessageTimeout seconds
+                            set aMessage to message messageIndex of targetMailbox
+                            set end of outputRows to my messageRow(aMessage, mailboxName, accountName, unitSeparator, recordSeparator, attachmentSeparator, attachmentFieldSeparator)
+                        end timeout
                     on error
                         set failureCount to failureCount + 1
                     end try

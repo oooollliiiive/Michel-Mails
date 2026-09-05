@@ -127,7 +127,8 @@ final class MailService {
                     candidate.attachmentIdentifier,
                     candidate.attachmentName,
                     destination.path
-                ]
+                ],
+                timeout: 6
             )
             return output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
                 && FileManager.default.fileExists(atPath: destination.path)
@@ -208,7 +209,11 @@ final class MailService {
         return true
     }
 
-    private static func runAppleScript(_ script: String, arguments: [String]) async throws -> String {
+    private static func runAppleScript(
+        _ script: String,
+        arguments: [String],
+        timeout: TimeInterval = 20
+    ) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
             let process = Process()
             let standardOutput = Pipe()
@@ -219,7 +224,15 @@ final class MailService {
             process.standardError = standardError
 
             try process.run()
+            let timeoutWorkItem = DispatchWorkItem {
+                if process.isRunning { process.terminate() }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + timeout,
+                execute: timeoutWorkItem
+            )
             process.waitUntilExit()
+            timeoutWorkItem.cancel()
 
             let outputData = standardOutput.fileHandleForReading.readDataToEndOfFile()
             let errorData = standardError.fileHandleForReading.readDataToEndOfFile()

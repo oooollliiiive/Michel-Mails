@@ -9,7 +9,7 @@ final class PromptPanel: NSPanel {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let promptWidth: CGFloat = 720
-    private static let promptBaseHeight: CGFloat = 132
+    private static let promptBaseHeight: CGFloat = 160
     private static let historyHeaderHeight: CGFloat = 26
     private static let historyRowHeight: CGFloat = 34
     private static let historySpacing: CGFloat = 12
@@ -50,6 +50,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     ) -> Bool {
         showPrompt()
         return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        indexController.stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     @objc private func showPrompt() {

@@ -74,6 +74,28 @@ struct SearchView: View {
                 historySuggestions
             }
 
+            HStack(spacing: 7) {
+                Spacer()
+                Text("Force Scan")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text(indexController.forceScanEnabled ? "ON" : "OFF")
+                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(indexController.forceScanEnabled ? Color.orange : Color.secondary)
+                    .frame(width: 24, alignment: .trailing)
+                Toggle(
+                    "Force Scan",
+                    isOn: Binding(
+                        get: { indexController.forceScanEnabled },
+                        set: indexController.setForceScan
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("ON scans continuously at maximum speed. It returns to OFF every time Michel Mails starts.")
+            }
+            .frame(height: 18)
+
             HStack(spacing: 8) {
                 Image(systemName: statusSymbol)
                     .foregroundStyle(statusColor)
