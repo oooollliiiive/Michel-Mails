@@ -10,6 +10,7 @@ final class SearchViewModel: ObservableObject {
     @Published var showSettings = false
     @Published var APIKeyDraft = ""
     @Published var modelDraft: String
+    @Published private(set) var AIInterpretationEnabled: Bool
     @Published var historyIsVisible = false
     @Published private(set) var recentPrompts: [String] = []
     var onGalleryReady: ((MailImageGallery) -> Void)?
@@ -20,19 +21,23 @@ final class SearchViewModel: ObservableObject {
     private let mailService = MailService()
     private let indexController: MailIndexController
     private let historyDefaultsKey = "recentSearchPrompts"
+    private let AIInterpretationDefaultsKey = "AIInterpretationEnabled"
 
     init(indexController: MailIndexController) {
         self.indexController = indexController
-        APIKeyDraft = KeychainStore.readAPIKey() ?? ""
+        let storedKey = KeychainStore.readAPIKey() ?? ""
+        APIKeyDraft = storedKey
         modelDraft = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-5.4-mini"
+        AIInterpretationEnabled = UserDefaults.standard.object(forKey: AIInterpretationDefaultsKey) as? Bool
+            ?? !storedKey.isEmpty
         recentPrompts = UserDefaults.standard.stringArray(forKey: historyDefaultsKey) ?? []
-        if APIKeyDraft.isEmpty {
-            statusText = "Local mode · add an OpenAI key in Settings to enable AI."
-            showSettings = true
-        }
     }
 
     var usesOpenAI: Bool {
+        AIInterpretationEnabled && hasOpenAIKey
+    }
+
+    var hasOpenAIKey: Bool {
         !APIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -70,7 +75,7 @@ final class SearchViewModel: ObservableObject {
             do {
                 let parsedQuery = try await interpreter.interpret(
                     requestText,
-                    APIKey: APIKeyDraft.nilIfBlank,
+                    APIKey: usesOpenAI ? APIKeyDraft.nilIfBlank : nil,
                     model: modelDraft.nilIfBlank ?? "gpt-5.4-mini"
                 )
                 statusText = "Searching the local email index…"
@@ -184,6 +189,10 @@ final class SearchViewModel: ObservableObject {
     func saveSettings() {
         do {
             try KeychainStore.saveAPIKey(APIKeyDraft)
+            if !hasOpenAIKey {
+                AIInterpretationEnabled = false
+            }
+            UserDefaults.standard.set(AIInterpretationEnabled, forKey: AIInterpretationDefaultsKey)
             let model = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             UserDefaults.standard.set(model.isEmpty ? "gpt-5.4-mini" : model, forKey: "openAIModel")
             modelDraft = model.isEmpty ? "gpt-5.4-mini" : model
@@ -194,6 +203,20 @@ final class SearchViewModel: ObservableObject {
         } catch {
             statusText = userFacingMessage(for: error)
         }
+    }
+
+    func setAIInterpretation(_ enabled: Bool) {
+        guard !enabled || hasOpenAIKey else {
+            AIInterpretationEnabled = false
+            showSettings = true
+            statusText = "Add an OpenAI API key to turn on AI interpretation."
+            return
+        }
+        AIInterpretationEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: AIInterpretationDefaultsKey)
+        statusText = enabled
+            ? "OpenAI interpretation is enabled."
+            : "Local interpretation is enabled."
     }
 
     private func copyConfirmationText(for query: MailQuery, summary: MailMatchSummary) -> String {

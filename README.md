@@ -20,9 +20,9 @@ Le MVP comprend :
 
 - une barre SwiftUI déplaçable, dont la position est mémorisée, sans rester au-dessus des autres applications ;
 - une vraie présence dans le Dock, avec une icône dédiée et réouverture de la barre au clic ;
-- une interprétation bilingue français–anglais via l’API OpenAI Responses ;
+- une interprétation bilingue français–anglais via l’API OpenAI Responses, activable ou désactivable à tout moment ;
 - un schéma de sortie strict pour convertir le sens du prompt en filtres et en ordre de tri fiables, sans coder chaque formulation en dur ;
-- un mode local de secours ;
+- un mode local rapide qui fonctionne sans API et reste disponible même lorsqu’une clé OpenAI est enregistrée ;
 - la correction approximative des noms grâce aux Contacts et à la similarité orthographique ;
 - un premier index local rapide des correspondants, objets, dates, tailles et pièces jointes, suivi d’un second scan progressif du contenu intégral déjà téléchargé ;
 - des recherches exécutées dans cet index sans afficher ni piloter l’interface de Mail ;
@@ -35,14 +35,14 @@ Le MVP comprend :
 - une liste compacte de résultats affichée directement dans Michel Mails, avec ouverture individuelle dans Mail ;
 - la détection des images jointes en excluant les petits logos, les bannières et les éléments de signature ;
 - une grille universelle inspirée de Michel OS pour les images, PDF, documents, tableurs, présentations, archives, fichiers audio et vidéo ;
-- des vignettes Quick Look — notamment la première page des PDF — avec le nom et la date du fichier ;
+- des vignettes non bloquantes pour les formats d’image reconnus par macOS, la première page des PDF et les vidéos, avec le nom et la date du fichier ;
 - le glisser-déposer des fichiers vers le Finder ou une autre application ;
 - le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
 - une confirmation avant de copier des images dans un dossier ;
 - le stockage local de la clé API dans un fichier privé accessible uniquement à l’utilisateur ;
 - la migration automatique de l’ancienne entrée du trousseau afin d’éviter une demande de mot de passe après chaque compilation locale.
 
-Le prompt et la date courante peuvent être envoyés à OpenAI pour être interprétés. Le contenu des emails et les pièces jointes restent sur le Mac.
+Lorsque `AI Interpretation` est activé, le prompt et la date courante peuvent être envoyés à OpenAI pour être interprétés. Lorsque l’interrupteur est désactivé, l’interprétation reste locale. Le contenu des emails et les pièces jointes restent toujours sur le Mac.
 
 ## Construire l’application
 
@@ -72,7 +72,7 @@ swift test
 ## Première ouverture
 
 1. Ouvrir `Michel Mails.app`.
-2. Ajouter une clé API OpenAI dans les réglages de l’application.
+2. Ajouter facultativement une clé API OpenAI, puis choisir `AI Interpretation` ON ou OFF.
 3. Ajouter `/Applications/Michel Mails.app` dans Réglages Système › Confidentialité et sécurité › Accès complet au disque, puis rouvrir l’application.
 4. Accepter l’autorisation d’automatiser Mail seulement lors de la première utilisation de `Open in Mail`.
 

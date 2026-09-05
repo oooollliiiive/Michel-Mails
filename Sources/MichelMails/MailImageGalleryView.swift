@@ -1,5 +1,4 @@
 import AppKit
-import QuickLookThumbnailing
 import SwiftUI
 
 struct MailImageGalleryView: View {
@@ -138,6 +137,7 @@ struct MailImageGalleryView: View {
         let kinds = Set(gallery.items.map(\.kind))
         if kinds == Set([.image]) { return "Email images" }
         if kinds == Set([.pdf]) { return "Email PDFs" }
+        if kinds == Set([.video]) { return "Email videos" }
         if kinds == Set([.document]) { return "Email documents" }
         return "Email files"
     }
@@ -360,14 +360,35 @@ struct MailImageGalleryView: View {
 private struct GalleryThumbnail: View {
     let item: MailImageItem
     @State private var image: NSImage?
+    @State private var isFallback = false
 
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(5)
+                ZStack {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(isFallback ? 24 : 5)
+
+                    if item.kind == .video, !isFallback {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 38, weight: .semibold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .black.opacity(0.48))
+                            .shadow(radius: 2)
+                    }
+
+                    if isFallback {
+                        VStack {
+                            Spacer()
+                            Text("Preview unavailable")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.bottom, 8)
+                        }
+                    }
+                }
             } else {
                 VStack(spacing: 7) {
                     ProgressView()
@@ -379,31 +400,13 @@ private struct GalleryThumbnail: View {
             }
         }
         .task(id: item.cachedURL) {
-            image = await thumbnail(for: item)
+            let result = await GalleryThumbnailService.thumbnail(
+                at: item.cachedURL,
+                kind: item.kind,
+                maximumDimension: 512
+            )
+            image = result.image
+            isFallback = result.isFallback
         }
-    }
-
-    private func thumbnail(for item: MailImageItem) async -> NSImage {
-        if item.kind == .image, let image = NSImage(contentsOf: item.cachedURL) {
-            return image
-        }
-
-        let request = QLThumbnailGenerator.Request(
-            fileAt: item.cachedURL,
-            size: NSSize(width: 420, height: 320),
-            scale: NSScreen.main?.backingScaleFactor ?? 2,
-            representationTypes: .thumbnail
-        )
-        if let thumbnail = await withCheckedContinuation({ continuation in
-            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, _ in
-                continuation.resume(returning: representation?.nsImage)
-            }
-        }) {
-            return thumbnail
-        }
-
-        let icon = NSWorkspace.shared.icon(forFile: item.cachedURL.path)
-        icon.size = NSSize(width: 128, height: 128)
-        return icon
     }
 }

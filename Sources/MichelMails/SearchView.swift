@@ -84,6 +84,25 @@ struct SearchView: View {
                     .tint(.orange)
                     .help("Add Michel Mails in Privacy & Security › Full Disk Access, then reopen Michel Mails if macOS asks.")
                 }
+
+                Text("AI Interpretation")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text(viewModel.usesOpenAI ? "ON" : "OFF")
+                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(viewModel.usesOpenAI ? Color.purple : Color.secondary)
+                    .frame(width: 24, alignment: .trailing)
+                Toggle(
+                    "AI Interpretation",
+                    isOn: Binding(
+                        get: { viewModel.usesOpenAI },
+                        set: viewModel.setAIInterpretation
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("ON uses OpenAI to understand prompts. OFF uses the fast local interpreter. Email contents always stay on this Mac.")
+
                 Spacer()
                 Text("Force Scan")
                     .font(.system(size: 11.5, weight: .semibold))
@@ -289,12 +308,19 @@ private struct SettingsView: View {
             }
 
             Form {
+                Toggle(
+                    "Use OpenAI to understand searches",
+                    isOn: Binding(
+                        get: { viewModel.usesOpenAI },
+                        set: viewModel.setAIInterpretation
+                    )
+                )
                 SecureField("OpenAI API key", text: $viewModel.APIKeyDraft)
                 TextField("Model", text: $viewModel.modelDraft)
             }
             .formStyle(.grouped)
 
-            Text("Only your prompt and the current date are sent to OpenAI. Email contents stay on this Mac.")
+            Text("When AI is on, only your prompt and the current date are sent to OpenAI. When it is off, interpretation stays local. Email contents always stay on this Mac.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -306,6 +332,6 @@ private struct SettingsView: View {
             }
         }
         .padding(24)
-        .frame(width: 500, height: 290)
+        .frame(width: 500, height: 330)
     }
 }

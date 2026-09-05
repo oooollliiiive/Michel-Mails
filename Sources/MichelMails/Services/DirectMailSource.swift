@@ -391,7 +391,7 @@ actor DirectMailSource {
         let MIMEType = attachment.MIMEType.isEmpty
             ? inferredMIMEType(for: attachment.name)
             : attachment.MIMEType
-        let isImage = MIMEType.hasPrefix("image/") || imageExtensions.contains(
+        let isImage = MIMEType.hasPrefix("image/") || MailAttachmentKind.imageExtensions.contains(
             URL(fileURLWithPath: attachment.name).pathExtension.lowercased()
         )
         let lowerName = attachment.name.lowercased()
@@ -573,10 +573,6 @@ actor DirectMailSource {
             .contains { folded.contains($0) }
     }
 
-    private static let imageExtensions: Set<String> = [
-        "jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "tif", "tiff", "bmp"
-    ]
-
     private static func inferredMIMEType(for name: String) -> String {
         switch URL(fileURLWithPath: name).pathExtension.lowercased() {
         case "jpg", "jpeg": return "image/jpeg"
@@ -585,6 +581,15 @@ actor DirectMailSource {
         case "heic", "heif": return "image/heic"
         case "webp": return "image/webp"
         case "tif", "tiff": return "image/tiff"
+        case "bmp": return "image/bmp"
+        case "svg", "svgz": return "image/svg+xml"
+        case "avif": return "image/avif"
+        case "jp2", "j2k": return "image/jp2"
+        case "dng": return "image/x-adobe-dng"
+        case "cr2", "cr3": return "image/x-canon-cr2"
+        case "nef": return "image/x-nikon-nef"
+        case "arw": return "image/x-sony-arw"
+        case "raf": return "image/x-fuji-raf"
         case "pdf": return "application/pdf"
         case "doc": return "application/msword"
         case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -597,6 +602,10 @@ actor DirectMailSource {
         case "m4a": return "audio/mp4"
         case "mp4": return "video/mp4"
         case "mov": return "video/quicktime"
+        case "m4v": return "video/x-m4v"
+        case "avi": return "video/x-msvideo"
+        case "mpg", "mpeg": return "video/mpeg"
+        case "webm": return "video/webm"
         default: return "application/octet-stream"
         }
     }

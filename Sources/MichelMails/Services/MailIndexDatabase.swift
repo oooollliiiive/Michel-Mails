@@ -66,6 +66,7 @@ actor MailIndexDatabase {
             "UPDATE messages SET body_indexed = 1 WHERE body_indexed = 0 AND body <> ''",
             on: connection
         )
+        try Self.reclassifyStoredPreviews(on: connection)
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path)
     }
 
@@ -729,6 +730,42 @@ actor MailIndexDatabase {
         }
     }
 
+    private static func reclassifyStoredPreviews(on database: OpaquePointer?) throws {
+        func extensionCondition(_ extensions: Set<String>) -> String {
+            extensions.sorted().map { "lower(name) LIKE '%.\($0)'" }.joined(separator: " OR ")
+        }
+
+        let images = extensionCondition(MailAttachmentKind.imageExtensions)
+        try execute(
+            """
+            UPDATE attachments
+            SET kind = 'image',
+                is_image = 1,
+                is_useful_image = CASE
+                    WHEN lower(name) LIKE '%signature%'
+                      OR lower(name) LIKE '%logo%'
+                      OR lower(name) LIKE '%spacer%'
+                      OR lower(name) LIKE '%tracking%'
+                      OR lower(name) LIKE '%icon%' THEN 0
+                    WHEN size_bytes = 0 OR size_bytes >= 5000 THEN 1
+                    ELSE 0
+                END
+            WHERE lower(mime_type) LIKE 'image/%' OR \(images)
+            """,
+            on: database
+        )
+
+        let videos = extensionCondition(MailAttachmentKind.videoExtensions)
+        try execute(
+            "UPDATE attachments SET kind = 'video' WHERE lower(mime_type) LIKE 'video/%' OR \(videos)",
+            on: database
+        )
+        try execute(
+            "UPDATE attachments SET kind = 'pdf' WHERE lower(mime_type) = 'application/pdf' OR lower(name) LIKE '%.pdf'",
+            on: database
+        )
+    }
+
     private func databaseError() -> MichelMailsError {
         let message = database
             .flatMap { sqlite3_errmsg($0) }
@@ -749,17 +786,11 @@ actor MailIndexDatabase {
     }
 
     private static func kind(of attachment: IndexedMailAttachment) -> MailAttachmentKind {
-        let MIME = attachment.MIMEType.lowercased()
-        let extensionName = URL(fileURLWithPath: attachment.name).pathExtension.lowercased()
-        if attachment.isImage || MIME.hasPrefix("image/") { return .image }
-        if MIME == "application/pdf" || extensionName == "pdf" { return .pdf }
-        if ["doc", "docx", "rtf", "txt", "pages"].contains(extensionName) { return .document }
-        if ["xls", "xlsx", "csv", "numbers"].contains(extensionName) { return .spreadsheet }
-        if ["ppt", "pptx", "key"].contains(extensionName) { return .presentation }
-        if ["zip", "rar", "7z", "tar", "gz"].contains(extensionName) { return .archive }
-        if MIME.hasPrefix("audio/") { return .audio }
-        if MIME.hasPrefix("video/") { return .video }
-        return .other
+        MailAttachmentKind.classify(
+            name: attachment.name,
+            MIMEType: attachment.MIMEType,
+            declaredImage: attachment.isImage
+        )
     }
 
     private static let schema = """

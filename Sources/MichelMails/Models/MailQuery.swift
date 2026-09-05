@@ -28,6 +28,46 @@ enum MailAttachmentKind: String, Codable, CaseIterable, Sendable {
     case audio
     case video
     case other
+
+    static func classify(name: String, MIMEType: String, declaredImage: Bool = false) -> Self {
+        let MIME = MIMEType.lowercased()
+        let extensionName = URL(fileURLWithPath: name).pathExtension.lowercased()
+        if declaredImage || MIME.hasPrefix("image/") || imageExtensions.contains(extensionName) {
+            return .image
+        }
+        if MIME == "application/pdf" || extensionName == "pdf" { return .pdf }
+        if documentExtensions.contains(extensionName) { return .document }
+        if spreadsheetExtensions.contains(extensionName) { return .spreadsheet }
+        if presentationExtensions.contains(extensionName) { return .presentation }
+        if archiveExtensions.contains(extensionName) { return .archive }
+        if MIME.hasPrefix("audio/") || audioExtensions.contains(extensionName) { return .audio }
+        if MIME.hasPrefix("video/") || videoExtensions.contains(extensionName) { return .video }
+        return .other
+    }
+
+    static let imageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "tif", "tiff", "bmp",
+        "svg", "svgz", "avif", "jp2", "j2k", "raw", "dng", "cr2", "cr3", "nef", "arw",
+        "raf", "orf", "rw2", "pef"
+    ]
+    static let videoExtensions: Set<String> = [
+        "mov", "mp4", "m4v", "avi", "mpg", "mpeg", "webm", "mkv", "3gp"
+    ]
+    private static let audioExtensions: Set<String> = [
+        "mp3", "m4a", "aac", "wav", "aiff", "flac", "ogg"
+    ]
+    private static let documentExtensions: Set<String> = [
+        "doc", "docx", "rtf", "txt", "pages", "odt"
+    ]
+    private static let spreadsheetExtensions: Set<String> = [
+        "xls", "xlsx", "csv", "numbers", "ods"
+    ]
+    private static let presentationExtensions: Set<String> = [
+        "ppt", "pptx", "key", "odp"
+    ]
+    private static let archiveExtensions: Set<String> = [
+        "zip", "rar", "7z", "tar", "gz", "bz2", "xz"
+    ]
 }
 
 struct MailQuery: Codable, Equatable, Sendable {
@@ -169,19 +209,7 @@ enum MailScriptRecordParser {
     }
 
     private static func attachmentKind(name: String, MIMEType: String) -> MailAttachmentKind {
-        let MIME = MIMEType.lowercased()
-        let extensionName = URL(fileURLWithPath: name).pathExtension.lowercased()
-        if MIME.hasPrefix("image/") || ["jpg", "jpeg", "png", "heic", "gif", "webp", "tif", "tiff"].contains(extensionName) {
-            return .image
-        }
-        if MIME == "application/pdf" || extensionName == "pdf" { return .pdf }
-        if ["doc", "docx", "rtf", "txt", "pages"].contains(extensionName) { return .document }
-        if ["xls", "xlsx", "csv", "numbers"].contains(extensionName) { return .spreadsheet }
-        if ["ppt", "pptx", "key"].contains(extensionName) { return .presentation }
-        if ["zip", "rar", "7z", "tar", "gz"].contains(extensionName) { return .archive }
-        if MIME.hasPrefix("audio/") { return .audio }
-        if MIME.hasPrefix("video/") { return .video }
-        return .other
+        MailAttachmentKind.classify(name: name, MIMEType: MIMEType)
     }
 }
 

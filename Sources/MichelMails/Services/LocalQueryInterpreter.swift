@@ -81,13 +81,14 @@ struct LocalQueryInterpreter {
         containsAny(text, ["montre", "affiche", "voir", "show", "display", "browse", "liste", "list"]) &&
             containsAny(text, [
                 "piece jointe", "pieces jointes", "attachment", "attachments", "fichier", "fichiers",
-                "file", "files", "pdf", "document", "documents", "spreadsheet", "presentation", "archive"
+                "file", "files", "pdf", "document", "documents", "spreadsheet", "presentation", "archive",
+                "video", "videos", "movie", "movies", "film", "films"
             ])
     }
 
     private func attachmentKinds(in text: String) -> [MailAttachmentKind] {
         var kinds: [MailAttachmentKind] = []
-        if containsAny(text, ["photo", "photos", "image", "images", "picture", "pictures", "jpg", "jpeg", "png", "heic"]) { kinds.append(.image) }
+        if containsAny(text, ["photo", "photos", "image", "images", "picture", "pictures", "jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "tiff", "raw"]) { kinds.append(.image) }
         if containsAny(text, ["pdf"]) { kinds.append(.pdf) }
         if containsAny(text, ["document", "documents", "docx", "word", "texte", "text file"]) { kinds.append(.document) }
         if containsAny(text, ["spreadsheet", "tableur", "excel", "xlsx", "numbers", "csv"]) { kinds.append(.spreadsheet) }
