@@ -109,11 +109,20 @@ actor MailIndexDatabase {
     func save(_ batch: MailScanBatch, total: Int, previous: MailScanProgress) throws -> MailScanProgress {
         try execute("BEGIN IMMEDIATE")
         do {
+            var isolatedWriteFailures = 0
             for message in batch.messages {
-                try upsert(message)
+                try execute("SAVEPOINT message_write")
+                do {
+                    try upsert(message)
+                    try execute("RELEASE message_write")
+                } catch {
+                    try? execute("ROLLBACK TO message_write")
+                    try? execute("RELEASE message_write")
+                    isolatedWriteFailures += 1
+                }
             }
             let scanned = min(total, previous.scanned + batch.attemptedCount)
-            let failures = previous.failures + batch.failureCount
+            let failures = previous.failures + batch.failureCount + isolatedWriteFailures
             let finished = batch.isFinished || scanned >= total
             try updateState(
                 total: total,

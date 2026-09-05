@@ -31,6 +31,7 @@ Le MVP comprend :
 - un compteur persistant du type `2,345 / 32,463 emails scanned` et une surveillance des nouveaux emails tant que l’application reste ouverte ;
 - un interrupteur `Force Scan`, remis sur `OFF` à chaque lancement, qui utilise de gros lots, des délais très courts et ignore rapidement les emails trop lents lorsqu’il est activé ;
 - une reprise immédiate depuis le dernier curseur enregistré, sans attendre le recomptage complet de toutes les boîtes Mail ;
+- un superviseur permanent : base locale indisponible, erreur Mail, lot bloqué ou email invalide déclenchent respectivement reconnexion, arrêt forcé ou passage au suivant, sans terminer le scan ;
 - une liste compacte de résultats affichée directement dans Michel Mails, avec ouverture individuelle dans Mail ;
 - la détection des images jointes en excluant les petits logos, les bannières et les éléments de signature ;
 - une grille universelle inspirée de Michel OS pour les images, PDF, documents, tableurs, présentations, archives, fichiers audio et vidéo ;

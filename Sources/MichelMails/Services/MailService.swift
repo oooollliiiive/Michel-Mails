@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import ImageIO
 
@@ -225,7 +226,14 @@ final class MailService {
 
             try process.run()
             let timeoutWorkItem = DispatchWorkItem {
-                if process.isRunning { process.terminate() }
+                if process.isRunning {
+                    process.terminate()
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1) {
+                        if process.isRunning {
+                            Darwin.kill(process.processIdentifier, SIGKILL)
+                        }
+                    }
+                }
             }
             DispatchQueue.global(qos: .userInitiated).asyncAfter(
                 deadline: .now() + timeout,

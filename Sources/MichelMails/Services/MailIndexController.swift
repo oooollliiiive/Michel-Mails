@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 @MainActor
@@ -45,25 +46,31 @@ final class MailIndexController: ObservableObject {
     }
 
     private func runScan() async {
-        let database: MailIndexDatabase
-        do {
-            database = try MailIndexDatabase()
-            self.database = database
-        } catch {
-            isAvailable = false
-            scanTask = nil
-            return
-        }
-
         while !Task.isCancelled {
+            let activeDatabase: MailIndexDatabase
+            do {
+                if let database {
+                    activeDatabase = database
+                } else {
+                    let reopenedDatabase = try MailIndexDatabase()
+                    database = reopenedDatabase
+                    activeDatabase = reopenedDatabase
+                }
+                isAvailable = true
+            } catch {
+                isAvailable = false
+                try? await Task.sleep(nanoseconds: forceScanEnabled ? 250_000_000 : 2_000_000_000)
+                continue
+            }
+
             do {
                 // Resume from the durable cursor immediately. Recounting more
                 // than 100,000 mailbox entries can take minutes and must never
                 // block an existing scan at launch.
-                var state = try await database.state(total: 0)
+                var state = try await activeDatabase.state(total: 0)
                 if state.progress.total == 0 || state.progress.isFinished {
                     let latestTotal = try await source.totalMessageCount(timeout: 180)
-                    state = try await database.state(total: latestTotal)
+                    state = try await activeDatabase.state(total: latestTotal)
                 }
                 isAvailable = true
                 progress = state.progress
@@ -78,7 +85,11 @@ final class MailIndexController: ObservableObject {
                             perMessageTimeout: forceScan ? 2 : 8,
                             processTimeout: forceScan ? 50 : 60
                         )
-                        progress = try await database.save(batch, total: progress.total, previous: progress)
+                        progress = try await activeDatabase.save(
+                            batch,
+                            total: progress.total,
+                            previous: progress
+                        )
                         state.cursor = batch.nextCursor
                         consecutiveBatchFailures = 0
                     } catch {
@@ -97,7 +108,7 @@ final class MailIndexController: ObservableObject {
                                 failureCount: 1,
                                 isFinished: false
                             )
-                            progress = try await database.save(
+                            progress = try await activeDatabase.save(
                                 skipped,
                                 total: progress.total,
                                 previous: progress
@@ -119,7 +130,8 @@ final class MailIndexController: ObservableObject {
                 if Task.isCancelled { break }
                 // Mail can temporarily be synchronizing or unavailable. Keep the
                 // durable cursor and reconnect instead of disabling the scanner.
-                isAvailable = true
+                database = nil
+                isAvailable = false
                 try? await Task.sleep(
                     nanoseconds: forceScanEnabled ? 250_000_000 : 2_000_000_000
                 )
@@ -133,9 +145,8 @@ private actor MailScanSource {
     private var currentProcess: Process?
 
     func cancelCurrentBatch() {
-        if currentProcess?.isRunning == true {
-            currentProcess?.terminate()
-        }
+        guard let currentProcess, currentProcess.isRunning else { return }
+        Self.forceTerminate(currentProcess)
     }
 
     func totalMessageCount(timeout: TimeInterval = 180) async throws -> Int {
@@ -192,7 +203,7 @@ private actor MailScanSource {
         return try await Task.detached(priority: .utility) {
             try process.run()
             let timeoutWorkItem = DispatchWorkItem {
-                if process.isRunning { process.terminate() }
+                if process.isRunning { Self.forceTerminate(process) }
             }
             DispatchQueue.global(qos: .utility).asyncAfter(
                 deadline: .now() + timeout,
@@ -220,6 +231,16 @@ private actor MailScanSource {
             }
             return output
         }.value
+    }
+
+    private nonisolated static func forceTerminate(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
+            if process.isRunning {
+                Darwin.kill(process.processIdentifier, SIGKILL)
+            }
+        }
     }
 
     private static let totalCountScript = #"""

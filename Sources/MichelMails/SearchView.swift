@@ -116,7 +116,7 @@ struct SearchView: View {
                             ? "Email scan complete"
                             : "Email scan not finished — results may be incomplete")
                 } else {
-                    Text("Email scan unavailable")
+                    Text("Email scan reconnecting…")
                         .font(.system(size: 10.5, weight: .medium, design: .rounded))
                         .foregroundStyle(.orange)
                         .lineLimit(1)
