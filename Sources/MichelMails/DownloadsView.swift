@@ -49,18 +49,6 @@ struct DownloadsSidebarView: View {
             .buttonStyle(.borderless)
             .help("Open Desktop/Files from Mails")
 
-            if manager.isPaused {
-                Button("Resume", systemImage: "play.fill") {
-                    manager.resumeAll()
-                }
-                .help("Resume Downloads")
-            } else if manager.hasPendingTransfers {
-                Button("Stop", systemImage: "stop.fill") {
-                    manager.stopAll()
-                }
-                .help("Stop Downloads")
-            }
-
             Spacer()
 
             Button {
@@ -103,6 +91,36 @@ struct DownloadsSidebarView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 7) {
+                Toggle(
+                    "Boost Downloads",
+                    isOn: Binding(
+                        get: { manager.boostDownloadsEnabled },
+                        set: manager.setBoostDownloadsEnabled
+                    )
+                )
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .font(.system(size: 9, weight: .semibold))
+                .help("Allow up to 5 simultaneous downloads through Mail")
+
+                Spacer(minLength: 2)
+
+                if manager.isPaused {
+                    Button("Resume", systemImage: "play.fill") {
+                        manager.resumeAll()
+                    }
+                    .help("Resume Downloads")
+                } else if manager.hasPendingTransfers {
+                    Button("Stop", systemImage: "stop.fill") {
+                        manager.stopAll()
+                    }
+                    .help("Stop Downloads")
+                }
+            }
+            .font(.system(size: 8.5, weight: .semibold))
+            .controlSize(.mini)
 
             if manager.failedCount > 0 {
                 HStack(spacing: 7) {
@@ -209,7 +227,6 @@ struct DownloadsSidebarView: View {
             return record.errorMessage ?? "Queued"
         case .downloading:
             switch record.activeRoute {
-            case .direct: return "Downloading directly…"
             case .appleMail: return "Downloading through Mail…"
             case .local: return "Preparing locally…"
             case .none: return "Downloading…"

@@ -280,6 +280,65 @@ func missingDragOriginalIsPrepared() {
     #expect(record?.isVisibleInDownloads == true)
 }
 
+@Test("Download boost is opt-in and allows five Mail transfers")
+@MainActor
+func downloadBoostIsOptIn() {
+    let manager = AttachmentDownloadManager(startsTransfersAutomatically: false)
+
+    #expect(manager.boostDownloadsEnabled == false)
+    #expect(manager.simultaneousMailDownloadLimit == 1)
+
+    manager.setBoostDownloadsEnabled(true)
+
+    #expect(manager.boostDownloadsEnabled == true)
+    #expect(manager.simultaneousMailDownloadLimit == 5)
+}
+
+@Test("Download Now keeps selected downloads newest first")
+@MainActor
+func selectedDownloadsArePrioritizedNewestFirst() {
+    let uniqueID = UUID().uuidString
+    let oldCandidate = IndexedMailAttachmentCandidate(
+        messageIdentifier: "old-\(uniqueID)",
+        localIdentifier: "old-\(uniqueID)",
+        sender: "Michel",
+        subject: "Old",
+        preview: "",
+        receivedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        accountName: "Mail",
+        mailboxName: "Inbox",
+        attachmentIdentifier: "old-image",
+        attachmentName: "old.jpg",
+        MIMEType: "image/jpeg",
+        sizeBytes: 12_000,
+        kind: .image,
+        sourcePath: "/missing/old-\(uniqueID).jpg"
+    )
+    let newCandidate = IndexedMailAttachmentCandidate(
+        messageIdentifier: "new-\(uniqueID)",
+        localIdentifier: "new-\(uniqueID)",
+        sender: "Michel",
+        subject: "New",
+        preview: "",
+        receivedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        accountName: "Mail",
+        mailboxName: "Inbox",
+        attachmentIdentifier: "new-image",
+        attachmentName: "new.jpg",
+        MIMEType: "image/jpeg",
+        sizeBytes: 12_000,
+        kind: .image,
+        sourcePath: "/missing/new-\(uniqueID).jpg"
+    )
+    let manager = AttachmentDownloadManager(startsTransfersAutomatically: false)
+
+    manager.prepareThumbnails([oldCandidate, newCandidate])
+    manager.downloadNow([oldCandidate, newCandidate])
+
+    #expect(manager.items.map(\.candidate.attachmentName) == ["new.jpg", "old.jpg"])
+    #expect(manager.items.allSatisfy { $0.state == .queued })
+}
+
 @Test("Original attachment cache expires files after seven days")
 func temporaryOriginalRetention() throws {
     let root = FileManager.default.temporaryDirectory

@@ -29,6 +29,12 @@ struct MailImageGalleryView: View {
         gallery.items.filter { selectedIDs.contains($0.id) }
     }
 
+    private var selectedWaitingCandidates: [IndexedMailAttachmentCandidate] {
+        selectedItems.compactMap(\.sourceCandidate).filter {
+            downloadManager.isWaitingForDownload($0)
+        }
+    }
+
     private var lastSelectedItem: MailImageItem? {
         guard let ID = selectionOrder.last else { return nil }
         return gallery.items.first { $0.id == ID }
@@ -246,6 +252,13 @@ struct MailImageGalleryView: View {
             if !selectedIDs.isEmpty {
                 Button(action: saveSelectedToDesktop) {
                     selectionButtonLabel("Save to directory From Mails")
+                }
+                .buttonStyle(.plain)
+            }
+
+            if !selectedWaitingCandidates.isEmpty {
+                Button(action: downloadSelectedNow) {
+                    selectionButtonLabel("Download Now")
                 }
                 .buttonStyle(.plain)
             }
@@ -607,6 +620,17 @@ struct MailImageGalleryView: View {
                 showTransientMessage("Could not save in Files from Mails.")
             }
         }
+    }
+
+    private func downloadSelectedNow() {
+        let candidates = selectedWaitingCandidates
+        guard !candidates.isEmpty else { return }
+        downloadManager.downloadNow(candidates)
+        showTransientMessage(
+            candidates.count == 1
+                ? "Download moved to the top of the queue."
+                : "\(candidates.count) downloads moved to the top of the queue."
+        )
     }
 
     private func showTransientMessage(

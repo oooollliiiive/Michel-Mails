@@ -11,10 +11,6 @@ final class SearchViewModel: ObservableObject {
     @Published var APIKeyDraft = ""
     @Published var modelDraft: String
     @Published private(set) var AIInterpretationEnabled: Bool
-    @Published var directMailDownloadsEnabledDraft = false
-    @Published var directMailAccountsDraft: [DirectMailAccountConfiguration] = []
-    @Published var directMailTestStatus = ""
-    @Published var isTestingDirectMail = false
     @Published var historyIsVisible = false
     @Published private(set) var recentPrompts: [String] = []
     @Published private(set) var displayedGallery: MailImageGallery?
@@ -51,8 +47,6 @@ final class SearchViewModel: ObservableObject {
         modelDraft = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-5.4-mini"
         AIInterpretationEnabled = UserDefaults.standard.object(forKey: AIInterpretationDefaultsKey) as? Bool
             ?? !storedKey.isEmpty
-        directMailDownloadsEnabledDraft = DirectMailAccountStore.isEnabled
-        directMailAccountsDraft = DirectMailAccountStore.loadAccounts()
         recentPrompts = UserDefaults.standard.stringArray(forKey: historyDefaultsKey) ?? []
     }
 
@@ -355,11 +349,6 @@ final class SearchViewModel: ObservableObject {
     func saveSettings() {
         do {
             try KeychainStore.saveAPIKey(APIKeyDraft)
-            try DirectMailAccountStore.save(
-                accounts: directMailAccountsDraft,
-                enabled: directMailDownloadsEnabledDraft
-            )
-            downloadManager.directMailSettingsDidChange()
             if !hasOpenAIKey {
                 AIInterpretationEnabled = false
             }
@@ -373,43 +362,6 @@ final class SearchViewModel: ObservableObject {
                 : "Local mode is enabled."
         } catch {
             statusText = userFacingMessage(for: error)
-        }
-    }
-
-    func addDirectMailAccount(provider: DirectMailProvider) {
-        directMailAccountsDraft.append(
-            DirectMailAccountConfiguration(provider: provider)
-        )
-        directMailDownloadsEnabledDraft = true
-        directMailTestStatus = ""
-    }
-
-    func removeDirectMailAccount(id: UUID) {
-        directMailAccountsDraft.removeAll { $0.id == id }
-        directMailTestStatus = ""
-    }
-
-    func testDirectMailAccounts() {
-        let accounts = directMailAccountsDraft.filter(\.isUsable)
-        guard !accounts.isEmpty, !isTestingDirectMail else {
-            directMailTestStatus = "Enter an email address and app-specific password first."
-            return
-        }
-        isTestingDirectMail = true
-        directMailTestStatus = "Testing direct connections…"
-        Task {
-            var results: [String] = []
-            for account in accounts {
-                do {
-                    let mailboxCount = try await DirectIMAPDownloader.shared.test(account)
-                    results.append("\(account.provider.displayName): connected (\(mailboxCount) mailboxes)")
-                } catch {
-                    let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                    results.append("\(account.provider.displayName): \(detail)")
-                }
-            }
-            directMailTestStatus = results.joined(separator: " · ")
-            isTestingDirectMail = false
         }
     }
 

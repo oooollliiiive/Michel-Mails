@@ -150,7 +150,6 @@ enum AttachmentTransferState: String, Equatable, Sendable {
 
 enum AttachmentTransferRoute: String, Equatable, Sendable {
     case local
-    case direct
     case appleMail
 }
 

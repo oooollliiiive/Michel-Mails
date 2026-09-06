@@ -58,7 +58,6 @@ enum AttachmentMaterializer {
     static func materialize(
         _ candidate: IndexedMailAttachmentCandidate,
         to destination: URL,
-        allowDirectDownload: Bool = false,
         allowMailDownload: Bool,
         mailDownloadTimeout: TimeInterval = 12
     ) async throws {
@@ -74,15 +73,6 @@ enum AttachmentMaterializer {
             return
         }
         try? FileManager.default.removeItem(at: destination)
-
-        if allowDirectDownload {
-            try await DirectIMAPDownloader.shared.download(candidate, to: destination)
-            guard isCompleteFile(at: destination, candidate: candidate) else {
-                try? FileManager.default.removeItem(at: destination)
-                throw AttachmentMaterializerError.incomplete
-            }
-            return
-        }
 
         guard allowMailDownload else { throw AttachmentMaterializerError.unavailable }
 

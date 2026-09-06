@@ -44,13 +44,12 @@ Le MVP comprend :
 - le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
 - le tag Finder automatique `From Email` sur chaque fichier enregistré, y compris lorsqu’une copie identique existe déjà dans le dossier choisi ;
 - une préparation automatique des vignettes : les fichiers locaux sont traités en parallèle et les pièces jointes manquantes sont demandées à Mail sans clic ;
-- des récupérations auprès de Mail exécutées une par une afin de préserver sa réactivité, toujours priorisées du fichier le plus récent au plus ancien ;
+- des récupérations auprès de Mail toujours priorisées du fichier le plus récent au plus ancien ;
+- un bouton `Boost Downloads` dans le haut de la colonne, désactivé à chaque lancement, qui autorise jusqu’à cinq téléchargements simultanés au lieu d’un seul ;
+- un bouton contextuel `Download Now` pour placer immédiatement les fichiers sélectionnés en tête de la file, les plus récents en premier ;
 - un watchdog court sur Mail : un téléchargement lent est repoussé derrière les nouvelles demandes, retenté automatiquement une fois avec un délai plus long, puis signalé sans jamais bloquer la suite de la file ;
 - le téléchargement réellement actif épinglé en haut de la colonne, avec `Stop`/`Resume`, `Retry Failed` et `Hide Failed` pour piloter clairement une longue file ;
-- un mode expérimental `Direct Downloads`, désactivable à tout moment, qui récupère jusqu’à quatre pièces jointes en parallèle depuis Gmail ou iCloud par IMAP/TLS sans piloter ni afficher Apple Mail ;
-- une configuration séparée de plusieurs comptes Gmail, `@mac.com`, `@me.com` ou `@icloud.com`, avec test de connexion et mots de passe spécifiques à Michel Mails stockés dans un fichier privé accessible uniquement à l’utilisateur ;
-- aucune reprise silencieuse par Apple Mail lorsque le mode direct est actif : une erreur directe reste visible et la désactivation du mode restaure explicitement l’ancien téléchargement ;
-- un compteur de téléchargements terminés conservé dans la colonne même après la disparition des lignes réussies, et les contrôles `Stop`/`Resume` compacts dans sa barre inférieure ;
+- un compteur de téléchargements terminés conservé dans la colonne même après la disparition des lignes réussies, et les contrôles `Stop`/`Resume` toujours visibles dans sa partie supérieure lorsqu’ils sont utiles ;
 - des vignettes persistantes conservées indépendamment des originaux et réutilisées aux lancements suivants ;
 - un cache mémoire des vignettes déjà affichées, pour éviter le bref retour d’un indicateur de téléchargement pendant le défilement ;
 - un cache temporaire des originaux conservé pendant 7 jours après leur dernière utilisation, afin de ne pas redemander plusieurs fois le même fichier à Mail ;
@@ -99,12 +98,9 @@ swift test
 1. Ouvrir `Michel Mails.app`.
 2. Ajouter facultativement une clé API OpenAI, puis choisir `AI Interpretation` ON ou OFF.
 3. Ajouter `/Applications/Michel Mails.app` dans Réglages Système › Confidentialité et sécurité › Accès complet au disque, puis rouvrir l’application.
-4. Pour éviter de solliciter Mail pendant les téléchargements, ouvrir Settings › Direct Downloads, ajouter le compte Gmail ou iCloud, saisir un mot de passe d’application puis tester et enregistrer la connexion.
-5. Si Direct Downloads reste désactivé, accepter l’autorisation d’automatiser Mail lors de la première utilisation de `Open in Mail` ou du téléchargement d’une pièce jointe absente du stockage local.
+4. Accepter l’autorisation d’automatiser Mail lors de la première utilisation de `Open in Mail` ou du téléchargement d’une pièce jointe absente du stockage local.
 
 Michel Mails n’a pas besoin de l’autorisation Accessibilité. L’index et les fichiers locaux de Mail sont ouverts uniquement en lecture. Mail ne devient visible que lorsque l’utilisateur choisit explicitement `Open in Mail`; un téléchargement manquant peut solliciter Mail en arrière-plan sans ouvrir sa fenêtre.
-
-Google documente la création d’un mot de passe d’application sur <https://support.google.com/mail/answer/185833>. Apple documente les mots de passe spécifiques aux apps et le serveur iCloud `imap.mail.me.com` sur <https://support.apple.com/102654> et <https://support.apple.com/102525>.
 
 ## Exemples
 

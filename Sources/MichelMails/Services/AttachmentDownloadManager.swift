@@ -8,11 +8,12 @@ final class AttachmentDownloadManager: ObservableObject {
     @Published private(set) var cacheResetGeneration = 0
     @Published private(set) var isResettingCaches = false
     @Published private(set) var isPaused = false
+    @Published private(set) var boostDownloadsEnabled = false
     @Published private(set) var completedCount = 0
 
     var onPresentDownloads: (() -> Void)?
 
-    private let maximumConcurrentTransfers = 4
+    private let maximumConcurrentTransfers = 5
     private let maximumAutomaticMailAttempts = 2
     private let startsTransfersAutomatically: Bool
     private var queue: [String] = []
@@ -26,8 +27,6 @@ final class AttachmentDownloadManager: ObservableObject {
     private var transferTasks: [String: Task<Void, Never>] = [:]
     private var deferredRetryTasks: [String: Task<Void, Never>] = [:]
     private var mailAttemptCounts: [String: Int] = [:]
-    private var directAttemptCounts: [String: Int] = [:]
-    private var pausedForDirectAuthentication = false
     private var transferGeneration = 0
     private var lastPreparedCandidates: [IndexedMailAttachmentCandidate] = []
     private let memoryThumbnailCache = NSCache<NSString, NSImage>()
@@ -47,6 +46,11 @@ final class AttachmentDownloadManager: ObservableObject {
                 let leftPriority = Self.displayPriority(for: $0.state)
                 let rightPriority = Self.displayPriority(for: $1.state)
                 if leftPriority != rightPriority { return leftPriority < rightPriority }
+                let leftWasRequestedNow = highPriorityKeys.contains($0.id)
+                let rightWasRequestedNow = highPriorityKeys.contains($1.id)
+                if leftWasRequestedNow != rightWasRequestedNow {
+                    return leftWasRequestedNow
+                }
                 return ($0.candidate.receivedAt ?? .distantPast) >
                     ($1.candidate.receivedAt ?? .distantPast)
             }
@@ -70,6 +74,10 @@ final class AttachmentDownloadManager: ObservableObject {
 
     var hasPendingTransfers: Bool {
         activeCount > 0 || queuedCount > 0 || deferredCount > 0
+    }
+
+    var simultaneousMailDownloadLimit: Int {
+        boostDownloadsEnabled ? 5 : 1
     }
 
     func record(for candidate: IndexedMailAttachmentCandidate) -> AttachmentTransferRecord? {
@@ -220,6 +228,67 @@ final class AttachmentDownloadManager: ObservableObject {
         pumpQueue()
     }
 
+    func downloadNow(_ candidates: [IndexedMailAttachmentCandidate]) {
+        let orderedCandidates = candidates.sorted {
+            ($0.receivedAt ?? .distantPast) > ($1.receivedAt ?? .distantPast)
+        }
+        guard !orderedCandidates.isEmpty else { return }
+        onPresentDownloads?()
+
+        for candidate in orderedCandidates {
+            let key = candidate.stableKey
+            guard !activeKeys.contains(key) else { continue }
+            finishedRowTasks.removeValue(forKey: key)?.cancel()
+            deferredRetryTasks.removeValue(forKey: key)?.cancel()
+            deferredRetryKeys.remove(key)
+            mailAttemptCounts[key] = 0
+
+            if var record = records[key] {
+                record.candidate = candidate
+                record.state = .queued
+                record.errorMessage = nil
+                record.activeRoute = nil
+                record.failedRoute = nil
+                record.allowsMailDownload = true
+                record.isVisibleInDownloads = true
+                if record.thumbnailURL == nil {
+                    record.needsThumbnail = candidate.kind == .image
+                }
+                if originalURL(for: candidate) == nil {
+                    record.needsOriginal = true
+                }
+                records[key] = record
+                queue.removeAll { $0 == key }
+                queue.append(key)
+                highPriorityKeys.insert(key)
+            } else {
+                enqueue(
+                    candidate,
+                    needsThumbnail: candidate.kind == .image,
+                    needsExport: false,
+                    needsOriginal: true,
+                    priority: true,
+                    allowsMailDownload: true,
+                    visibleInDownloads: true,
+                    exportDirectoryURL: nil
+                )
+            }
+        }
+        pumpQueue()
+    }
+
+    func isWaitingForDownload(_ candidate: IndexedMailAttachmentCandidate) -> Bool {
+        guard let state = records[candidate.stableKey]?.state else {
+            return originalURL(for: candidate) == nil
+        }
+        switch state {
+        case .available, .queued, .deferred, .failed:
+            return true
+        case .downloading, .ready:
+            return false
+        }
+    }
+
     func prepareOriginalsForDragging(_ candidates: [IndexedMailAttachmentCandidate]) {
         guard !candidates.isEmpty else { return }
         onPresentDownloads?()
@@ -246,7 +315,6 @@ final class AttachmentDownloadManager: ObservableObject {
         deferredRetryTasks.removeValue(forKey: candidate.stableKey)?.cancel()
         deferredRetryKeys.remove(candidate.stableKey)
         mailAttemptCounts[candidate.stableKey] = 0
-        directAttemptCounts[candidate.stableKey] = 0
         record.state = .queued
         record.errorMessage = nil
         record.allowsMailDownload = true
@@ -264,30 +332,15 @@ final class AttachmentDownloadManager: ObservableObject {
         pumpQueue()
     }
 
-    func directMailSettingsDidChange() {
-        directAttemptCounts.removeAll()
-        var queuedKeys = Set(queue)
-        for key in orderedKeys {
-            guard var record = records[key] else { continue }
-            if record.state == .failed, record.failedRoute == .direct {
-                record.state = .queued
-                record.errorMessage = nil
-                record.failedRoute = nil
-                if queuedKeys.insert(key).inserted { queue.append(key) }
-            }
-            records[key] = record
-        }
-        if pausedForDirectAuthentication {
-            pausedForDirectAuthentication = false
-            isPaused = false
-        }
+    func setBoostDownloadsEnabled(_ enabled: Bool) {
+        guard boostDownloadsEnabled != enabled else { return }
+        boostDownloadsEnabled = enabled
         pumpQueue()
     }
 
     func stopAll() {
         guard !isPaused else { return }
         isPaused = true
-        pausedForDirectAuthentication = false
         transferGeneration &+= 1
 
         let interruptedKeys = activeKeys
@@ -312,13 +365,11 @@ final class AttachmentDownloadManager: ObservableObject {
             }
         }
         for key in interruptedKeys { mailAttemptCounts.removeValue(forKey: key) }
-        for key in interruptedKeys { directAttemptCounts.removeValue(forKey: key) }
     }
 
     func resumeAll() {
         guard isPaused else { return }
         isPaused = false
-        pausedForDirectAuthentication = false
         pumpQueue()
     }
 
@@ -332,7 +383,6 @@ final class AttachmentDownloadManager: ObservableObject {
             deferredRetryTasks.removeValue(forKey: key)?.cancel()
             deferredRetryKeys.remove(key)
             mailAttemptCounts[key] = 0
-            directAttemptCounts[key] = 0
             record.state = .queued
             record.errorMessage = nil
             record.allowsMailDownload = true
@@ -344,7 +394,6 @@ final class AttachmentDownloadManager: ObservableObject {
             if queuedKeys.insert(key).inserted { queue.insert(key, at: 0) }
         }
         isPaused = false
-        pausedForDirectAuthentication = false
         onPresentDownloads?()
         pumpQueue()
     }
@@ -367,7 +416,6 @@ final class AttachmentDownloadManager: ObservableObject {
         for key in removable { deferredRetryTasks.removeValue(forKey: key)?.cancel() }
         deferredRetryKeys.subtract(removable)
         for key in removable { mailAttemptCounts.removeValue(forKey: key) }
-        for key in removable { directAttemptCounts.removeValue(forKey: key) }
         orderedKeys.removeAll { removable.contains($0) }
         queue.removeAll { removable.contains($0) }
         highPriorityKeys.subtract(removable)
@@ -386,10 +434,8 @@ final class AttachmentDownloadManager: ObservableObject {
         deferredRetryTasks.removeAll()
         deferredRetryKeys.removeAll()
         mailAttemptCounts.removeAll()
-        directAttemptCounts.removeAll()
         completedCount = 0
         isPaused = false
-        pausedForDirectAuthentication = false
         queue.removeAll()
         activeKeys.removeAll()
         activeMailKeys.removeAll()
@@ -477,18 +523,19 @@ final class AttachmentDownloadManager: ObservableObject {
         while activeKeys.count < maximumConcurrentTransfers, !queue.isEmpty {
             let eligibleIndices = queue.indices.filter { index in
                 guard let record = records[queue[index]] else { return false }
-                let hasDirectRoute = record.allowsMailDownload &&
-                    DirectMailAccountStore.isEnabled
-                return hasDirectRoute || !record.allowsMailDownload ||
-                    (activeMailKeys.isEmpty && !mailCooldown)
+                return !record.allowsMailDownload ||
+                    (activeMailKeys.count < simultaneousMailDownloadLimit && !mailCooldown)
             }
             guard !eligibleIndices.isEmpty else { return }
             let regularIndices = eligibleIndices.filter {
                 !deferredRetryKeys.contains(queue[$0])
             }
             let normalPool = regularIndices.isEmpty ? eligibleIndices : regularIndices
-            let selectedIndex = eligibleIndices.first { highPriorityKeys.contains(queue[$0]) }
-                ?? normalPool.max { left, right in
+            let priorityPool = normalPool.filter {
+                highPriorityKeys.contains(queue[$0])
+            }
+            let selectionPool = priorityPool.isEmpty ? normalPool : priorityPool
+            let selectedIndex = selectionPool.max { left, right in
                     let leftDate = records[queue[left]]?.candidate.receivedAt ?? .distantPast
                     let rightDate = records[queue[right]]?.candidate.receivedAt ?? .distantPast
                     return leftDate < rightDate
@@ -498,13 +545,9 @@ final class AttachmentDownloadManager: ObservableObject {
             highPriorityKeys.remove(key)
             deferredRetryKeys.remove(key)
             guard var record = records[key], !activeKeys.contains(key) else { continue }
-            let attemptUsesDirectDownload = record.allowsMailDownload &&
-                DirectMailAccountStore.isEnabled
-            let attemptUsesAppleMail = record.allowsMailDownload && !attemptUsesDirectDownload
+            let attemptUsesAppleMail = record.allowsMailDownload
             record.state = .downloading
-            record.activeRoute = attemptUsesDirectDownload
-                ? .direct
-                : (attemptUsesAppleMail ? .appleMail : .local)
+            record.activeRoute = attemptUsesAppleMail ? .appleMail : .local
             records[key] = record
             activeKeys.insert(key)
             if attemptUsesAppleMail { activeMailKeys.insert(key) }
@@ -515,9 +558,6 @@ final class AttachmentDownloadManager: ObservableObject {
                 mailAttemptCounts[key] = mailAttempt
             } else {
                 mailAttempt = 0
-            }
-            if attemptUsesDirectDownload {
-                directAttemptCounts[key] = (directAttemptCounts[key] ?? 0) + 1
             }
             let mailDownloadTimeout: TimeInterval = mailAttempt <= 1 ? 8 : 20
             let generation = transferGeneration
@@ -540,7 +580,6 @@ final class AttachmentDownloadManager: ObservableObject {
                         try await AttachmentMaterializer.materialize(
                             candidate,
                             to: temporaryURL,
-                            allowDirectDownload: attemptUsesDirectDownload,
                             allowMailDownload: attemptUsesAppleMail,
                             mailDownloadTimeout: mailDownloadTimeout
                         )
@@ -558,7 +597,6 @@ final class AttachmentDownloadManager: ObservableObject {
                     self?.finishFailedTransfer(
                         key: key,
                         error: error,
-                        attemptUsedDirectDownload: attemptUsesDirectDownload,
                         attemptUsedAppleMail: attemptUsesAppleMail,
                         generation: generation
                     )
@@ -594,7 +632,6 @@ final class AttachmentDownloadManager: ObservableObject {
                 finishFailedTransfer(
                     key: key,
                     error: error,
-                    attemptUsedDirectDownload: record.activeRoute == .direct,
                     attemptUsedAppleMail: record.activeRoute == .appleMail,
                     generation: generation
                 )
@@ -611,7 +648,6 @@ final class AttachmentDownloadManager: ObservableObject {
                 finishFailedTransfer(
                     key: key,
                     error: AttachmentMaterializerError.incomplete,
-                    attemptUsedDirectDownload: record.activeRoute == .direct,
                     attemptUsedAppleMail: record.activeRoute == .appleMail,
                     generation: generation
                 )
@@ -638,7 +674,6 @@ final class AttachmentDownloadManager: ObservableObject {
                 finishFailedTransfer(
                     key: key,
                     error: error,
-                    attemptUsedDirectDownload: record.activeRoute == .direct,
                     attemptUsedAppleMail: record.activeRoute == .appleMail,
                     generation: generation
                 )
@@ -658,7 +693,6 @@ final class AttachmentDownloadManager: ObservableObject {
         records[key] = record
         completedCount += 1
         mailAttemptCounts.removeValue(forKey: key)
-        directAttemptCounts.removeValue(forKey: key)
         deferredRetryTasks.removeValue(forKey: key)?.cancel()
         deferredRetryKeys.remove(key)
         releaseActiveTransfer(key)
@@ -670,7 +704,6 @@ final class AttachmentDownloadManager: ObservableObject {
     private func finishFailedTransfer(
         key: String,
         error: Error,
-        attemptUsedDirectDownload: Bool,
         attemptUsedAppleMail: Bool,
         generation: Int
     ) {
@@ -679,43 +712,7 @@ final class AttachmentDownloadManager: ObservableObject {
         finishedRowTasks.removeValue(forKey: key)?.cancel()
         releaseActiveTransfer(key)
 
-        if attemptUsedDirectDownload,
-           let directError = error as? DirectIMAPDownloadError {
-            if directError.requiresConfiguration {
-                pausedForDirectAuthentication = true
-                isPaused = true
-            } else if directError.isTransient, (directAttemptCounts[key] ?? 1) < 2 {
-                let directAttempt = directAttemptCounts[key] ?? 1
-                record.state = .deferred
-                record.activeRoute = nil
-                record.errorMessage = "Direct server unavailable · retrying automatically"
-                records[key] = record
-                scheduleDeferredRetry(key, attempt: directAttempt)
-                pumpQueue()
-                return
-            }
-            record.state = .failed
-            record.activeRoute = nil
-            record.failedRoute = .direct
-            record.errorMessage = (directError.errorDescription ?? "Direct download failed.") +
-                " Disable Direct Downloads in Settings to use Apple Mail instead."
-            records[key] = record
-            directAttemptCounts.removeValue(forKey: key)
-            pumpQueue()
-            return
-        }
-        if attemptUsedDirectDownload {
-            record.state = .failed
-            record.activeRoute = nil
-            record.failedRoute = .direct
-            record.errorMessage = "Direct download returned an incomplete file. Disable Direct Downloads in Settings to use Apple Mail instead."
-            records[key] = record
-            directAttemptCounts.removeValue(forKey: key)
-            pumpQueue()
-            return
-        }
-
-        if !attemptUsedDirectDownload, !attemptUsedAppleMail,
+        if !attemptUsedAppleMail,
            (record.allowsMailDownload || record.automaticallyDownloadIfNeeded) {
             record.state = .queued
             record.activeRoute = nil
@@ -729,7 +726,7 @@ final class AttachmentDownloadManager: ObservableObject {
             pumpQueue()
             return
         }
-        if !attemptUsedDirectDownload, !attemptUsedAppleMail,
+        if !attemptUsedAppleMail,
            error is AttachmentMaterializerError {
             record.state = .available
             record.activeRoute = nil
@@ -754,7 +751,6 @@ final class AttachmentDownloadManager: ObservableObject {
         record.failedRoute = attemptUsedAppleMail ? .appleMail : .local
         deferredRetryKeys.remove(key)
         mailAttemptCounts.removeValue(forKey: key)
-        directAttemptCounts.removeValue(forKey: key)
         record.errorMessage = (error as? LocalizedError)?.errorDescription
             ?? "The attachment could not be downloaded."
         records[key] = record
