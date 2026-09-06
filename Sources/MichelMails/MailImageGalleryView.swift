@@ -233,7 +233,7 @@ struct MailImageGalleryView: View {
                 )
 
             Button(action: saveSelectedToDesktop) {
-                Text("Save to Desktop")
+                Text("Save to directory From Mails")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
@@ -398,7 +398,7 @@ struct MailImageGalleryView: View {
             Button("Copy File") {
                 copy([item])
             }
-            Button("Save to Desktop") {
+            Button("Save to directory From Mails") {
                 saveSingle(item)
             }
         }
