@@ -16,6 +16,7 @@ final class AttachmentDownloadManager: ObservableObject {
     private var highPriorityKeys: Set<String> = []
     private var mailCooldown = false
     private var presentedAutomaticDownloads = false
+    private var finishedRowTasks: [String: Task<Void, Never>] = [:]
 
     init(startsTransfersAutomatically: Bool = true) {
         self.startsTransfersAutomatically = startsTransfersAutomatically
@@ -180,6 +181,7 @@ final class AttachmentDownloadManager: ObservableObject {
         guard var record = records[candidate.stableKey], !activeKeys.contains(candidate.stableKey) else {
             return
         }
+        finishedRowTasks.removeValue(forKey: candidate.stableKey)?.cancel()
         record.state = .queued
         record.errorMessage = nil
         record.allowsMailDownload = true
@@ -200,6 +202,7 @@ final class AttachmentDownloadManager: ObservableObject {
             $0.isVisibleInDownloads && $0.state == .ready && !activeKeys.contains($0.id)
         }.map(\.id))
         for key in removable { records.removeValue(forKey: key) }
+        for key in removable { finishedRowTasks.removeValue(forKey: key)?.cancel() }
         orderedKeys.removeAll { removable.contains($0) }
         queue.removeAll { removable.contains($0) }
         highPriorityKeys.subtract(removable)
@@ -221,6 +224,7 @@ final class AttachmentDownloadManager: ObservableObject {
         openWhenReady: Bool = false
     ) {
         let key = candidate.stableKey
+        finishedRowTasks.removeValue(forKey: key)?.cancel()
         var record = records[key] ?? AttachmentTransferRecord(
             candidate: candidate,
             state: .queued,
@@ -401,6 +405,7 @@ final class AttachmentDownloadManager: ObservableObject {
         record.errorMessage = nil
         records[key] = record
         releaseActiveTransfer(key)
+        scheduleFinishedRowHiding(key)
         pumpQueue()
     }
 
@@ -410,6 +415,7 @@ final class AttachmentDownloadManager: ObservableObject {
         attemptAllowedMailDownload: Bool
     ) {
         guard var record = records[key] else { return }
+        finishedRowTasks.removeValue(forKey: key)?.cancel()
         releaseActiveTransfer(key)
         if !attemptAllowedMailDownload,
            (record.allowsMailDownload || record.automaticallyDownloadIfNeeded) {
@@ -456,6 +462,18 @@ final class AttachmentDownloadManager: ObservableObject {
         guard !presentedAutomaticDownloads else { return }
         presentedAutomaticDownloads = true
         onPresentDownloads?()
+    }
+
+    private func scheduleFinishedRowHiding(_ key: String) {
+        finishedRowTasks.removeValue(forKey: key)?.cancel()
+        finishedRowTasks[key] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, let self, var record = self.records[key],
+                  record.state == .ready else { return }
+            record.isVisibleInDownloads = false
+            self.records[key] = record
+            self.finishedRowTasks[key] = nil
+        }
     }
 
     private static func destinationDirectory() throws -> URL {

@@ -12,6 +12,7 @@ struct MailImageGalleryView: View {
 
     @State private var selectedIDs: Set<UUID> = []
     @State private var selectionOrder: [UUID] = []
+    @State private var selectionModeEnabled = false
     @State private var cardFrames: [UUID: CGRect] = [:]
     @State private var statusMessage = "Select files · drag them anywhere or copy and paste"
     @State private var transientMessage: String?
@@ -180,17 +181,26 @@ struct MailImageGalleryView: View {
             Divider()
                 .frame(height: 20)
 
-            Button("Select All") {
-                selectedIDs = Set(gallery.items.map(\.id))
-                selectionOrder = gallery.items.map(\.id)
+            Button {
+                toggleSelectionMode()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: selectionModeEnabled ? "checkmark.circle.fill" : "checkmark.circle")
+                    Text(selectionModeEnabled ? "Select ON" : "Select")
+                }
+                .font(.system(size: 11.5, weight: .bold))
             }
-            .disabled(gallery.items.isEmpty || selectedIDs.count == gallery.items.count)
+            .buttonStyle(.borderedProminent)
+            .tint(selectionModeEnabled ? Color.accentColor : Color.secondary)
+            .help(selectionModeEnabled ? "Turn off multiple selection" : "Turn on multiple selection")
 
-            Button("Unselect All") {
-                selectedIDs.removeAll()
-                selectionOrder.removeAll()
+            if selectionModeEnabled {
+                Button("Select All") {
+                    selectedIDs = Set(gallery.items.map(\.id))
+                    selectionOrder = gallery.items.map(\.id)
+                }
+                .disabled(gallery.items.isEmpty || selectedIDs.count == gallery.items.count)
             }
-            .disabled(selectedIDs.isEmpty)
 
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
@@ -274,6 +284,20 @@ struct MailImageGalleryView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            Button(action: unselectAll) {
+                Text("Unselect All")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(Color.accentColor.opacity(0.34), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
         }
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
         .fixedSize()
@@ -281,7 +305,7 @@ struct MailImageGalleryView: View {
     }
 
     private func selectionBarPosition(in viewportSize: CGSize) -> CGPoint {
-        let halfBarWidth: CGFloat = 190
+        let halfBarWidth: CGFloat = selectedIDs.count == 1 ? 260 : 215
         let barHalfHeight: CGFloat = 18
         let topY = barHalfHeight + 8
         guard let ID = selectionOrder.last,
@@ -305,9 +329,9 @@ struct MailImageGalleryView: View {
         return VStack(alignment: .leading, spacing: 0) {
             ZStack {
                 GalleryThumbnail(item: item, downloadManager: downloadManager)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: cardHeight)
+                    .frame(width: cardWidth, height: cardHeight)
                     .background(Color(nsColor: .controlBackgroundColor))
+                    .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 VStack(spacing: 0) {
@@ -414,7 +438,10 @@ struct MailImageGalleryView: View {
     }
 
     private func toggle(_ item: MailImageItem) {
-        if selectedIDs.contains(item.id) {
+        if !selectionModeEnabled {
+            selectedIDs = [item.id]
+            selectionOrder = [item.id]
+        } else if selectedIDs.contains(item.id) {
             selectedIDs.remove(item.id)
             selectionOrder.removeAll { $0 == item.id }
         } else {
@@ -423,6 +450,27 @@ struct MailImageGalleryView: View {
             selectionOrder.append(item.id)
         }
         statusMessage = "Drag files, copy them, or save them"
+    }
+
+    private func toggleSelectionMode() {
+        selectionModeEnabled.toggle()
+        if !selectionModeEnabled,
+           selectedIDs.count > 1,
+           let lastSelectedID = selectionOrder.last {
+            selectedIDs = [lastSelectedID]
+            selectionOrder = [lastSelectedID]
+        }
+        statusMessage = selectionModeEnabled
+            ? "Multiple selection is on"
+            : "Single selection is on"
+    }
+
+    private func unselectAll() {
+        selectedIDs.removeAll()
+        selectionOrder.removeAll()
+        statusMessage = selectionModeEnabled
+            ? "Multiple selection is on"
+            : "Select a file"
     }
 
     private func saveSelectedToDesktop() {
@@ -647,7 +695,7 @@ private struct GalleryThumbnail: View {
                     } else {
                         Image(nsImage: image)
                             .resizable()
-                            .scaledToFill()
+                            .scaledToFit()
                     }
 
                     if item.kind == .video, !isFallback {
@@ -668,6 +716,8 @@ private struct GalleryThumbnail: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
             } else if record?.state == .failed, let candidate {
                 Button {
                     downloadManager.retry(candidate)

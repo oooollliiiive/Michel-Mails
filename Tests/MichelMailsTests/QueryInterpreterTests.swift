@@ -441,6 +441,107 @@ func latestImageShortcutSearch() async throws {
     #expect(!correspondents.contains("Junk Sender <junk@example.com>"))
 }
 
+@Test("Duplicate mailbox identities and malformed shadow attachments collapse to one email")
+func duplicateMailIdentityDeduplication() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let database = try MailIndexDatabase(databaseURL: directory.appendingPathComponent("dedup.sqlite"))
+    let date = Date(timeIntervalSince1970: 1_788_500_222)
+    let legacyAttachment = IndexedMailAttachment(
+        identifier: "2",
+        name: "5193ae;khg-khgc0-f287-4864-b111-f915058c833e.png",
+        MIMEType: "image/png",
+        sizeBytes: 8_005_587,
+        isImage: true,
+        isUsefulImage: true,
+        isDownloaded: true
+    )
+    let phantomAttachment = IndexedMailAttachment(
+        identifier: "1.2",
+        name: "\"5193ae",
+        MIMEType: "image/png",
+        sizeBytes: 0,
+        isImage: true,
+        isUsefulImage: true,
+        isDownloaded: false
+    )
+    let localAttachment = IndexedMailAttachment(
+        identifier: "file",
+        name: legacyAttachment.name,
+        MIMEType: "image/png",
+        sizeBytes: legacyAttachment.sizeBytes,
+        isImage: true,
+        isUsefulImage: true,
+        isDownloaded: true,
+        sourcePath: "/private/tmp/real-image.png"
+    )
+    let sharedValues = (
+        sender: "Michel Gondry <mgondry@mac.com>",
+        recipients: "Me <me@example.com>",
+        subject: "Re: cozy room"
+    )
+    let messages = [
+        IndexedMailMessage(
+            messageIdentifier: "07D262EA-F821-43C1-B8D7-AA09F03EFB44@mac.com",
+            localIdentifier: "19",
+            sender: sharedValues.sender,
+            recipients: sharedValues.recipients,
+            subject: sharedValues.subject,
+            body: "Same message",
+            receivedAt: date,
+            sizeBytes: 8_100_000,
+            mailboxName: "Important",
+            accountName: "Google",
+            isSent: false,
+            attachments: [legacyAttachment]
+        ),
+        IndexedMailMessage(
+            messageIdentifier: "831252581694405420",
+            localIdentifier: "19",
+            sender: sharedValues.sender,
+            recipients: sharedValues.recipients,
+            subject: sharedValues.subject,
+            body: "Same message",
+            receivedAt: date,
+            sizeBytes: 8_100_000,
+            mailboxName: "All Mail",
+            accountName: "ACCOUNT-ID",
+            isSent: false,
+            attachments: [phantomAttachment, localAttachment],
+            sourcePath: "/private/tmp/19.partial.emlx"
+        )
+    ]
+    _ = try await database.saveDirectMetadata(
+        DirectMailScanBatch(
+            messages: messages,
+            nextRowID: 19,
+            attemptedCount: 2,
+            failureCount: 0,
+            isFinished: true
+        ),
+        total: 2,
+        previous: MailScanProgress(total: 2, phase: .metadata)
+    )
+
+    var imageQuery = MailQuery(action: .showImages, hasImage: true, hasAttachment: true)
+    imageQuery.attachmentKinds = [.image]
+    imageQuery.allResults = true
+    let attachments = try await database.searchAttachments(
+        imageQuery,
+        includePotentialParasites: true
+    )
+    #expect(attachments.count == 1)
+    #expect(attachments[0].attachmentName == legacyAttachment.name)
+    #expect(attachments[0].sourcePath == localAttachment.sourcePath)
+
+    let emails = try await database.searchMessages(MailQuery(keywords: ["cozy"]))
+    #expect(emails.items.count == 1)
+    #expect(emails.items[0].reference.mailboxName == "All Mail")
+}
+
 @Test("The partial local index searches words, file kinds, and oldest order")
 func partialLocalIndexSearch() async throws {
     let directory = FileManager.default.temporaryDirectory

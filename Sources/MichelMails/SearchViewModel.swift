@@ -542,15 +542,22 @@ final class SearchViewModel: ObservableObject {
         guard gallery.items.count > targetCount else { return gallery }
         var kept: [MailImageItem] = []
         var index = 0
+        var usefulImageCount = 0
         while index < gallery.items.count {
-            let messageKey = gallery.items[index].message.reference.stableKey
+            let messageKey = gallery.items[index].sourceCandidate
+                .map(MailResultDeduplicator.logicalMessageKey)
+                ?? gallery.items[index].message.reference.stableKey
             let groupStart = index
             while index < gallery.items.count,
-                  gallery.items[index].message.reference.stableKey == messageKey {
+                  (gallery.items[index].sourceCandidate
+                    .map(MailResultDeduplicator.logicalMessageKey)
+                    ?? gallery.items[index].message.reference.stableKey) == messageKey {
                 index += 1
             }
-            kept.append(contentsOf: gallery.items[groupStart..<index])
-            if kept.count >= targetCount { break }
+            let group = gallery.items[groupStart..<index]
+            kept.append(contentsOf: group)
+            usefulImageCount += group.filter { !$0.isPotentialParasite }.count
+            if usefulImageCount >= targetCount { break }
         }
         return MailImageGallery(
             items: kept,

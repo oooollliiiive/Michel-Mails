@@ -204,7 +204,7 @@ enum DirectEmlxReader {
 
     private static func headerParameter(_ name: String, in rawValue: String?) -> String? {
         guard let rawValue else { return nil }
-        for component in rawValue.split(separator: ";").dropFirst() {
+        for component in headerComponents(rawValue).dropFirst() {
             let pair = component.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard pair.count == 2,
                   pair[0].trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(name) == .orderedSame else {
@@ -221,6 +221,34 @@ enum DirectEmlxReader {
             return value.removingPercentEncoding ?? value
         }
         return nil
+    }
+
+    /// MIME parameters are separated by semicolons, except when the semicolon
+    /// belongs to a quoted filename. A plain String.split creates phantom
+    /// attachments such as `"5193ae` for `filename="5193ae;rest.png"`.
+    private static func headerComponents(_ value: String) -> [Substring] {
+        var components: [Substring] = []
+        var start = value.startIndex
+        var index = value.startIndex
+        var isQuoted = false
+        var isEscaped = false
+
+        while index < value.endIndex {
+            let character = value[index]
+            if isEscaped {
+                isEscaped = false
+            } else if character == "\\", isQuoted {
+                isEscaped = true
+            } else if character == "\"" {
+                isQuoted.toggle()
+            } else if character == ";", !isQuoted {
+                components.append(value[start..<index])
+                start = value.index(after: index)
+            }
+            index = value.index(after: index)
+        }
+        components.append(value[start..<value.endIndex])
+        return components
     }
 
     private static func attachmentParts(in part: Part) -> [Part] {

@@ -1,11 +1,14 @@
 import SwiftUI
 
 struct SearchView: View {
+    private static let latestImageCountDefaultsKey = "MichelMailsLatestImageCount"
+    private static let defaultLatestImageCount = 38
+
     @ObservedObject var viewModel: SearchViewModel
     @ObservedObject var indexController: MailIndexController
     @ObservedObject var downloadManager: AttachmentDownloadManager
     @FocusState private var promptIsFocused: Bool
-    @State private var latestImageCount = 20
+    @State private var latestImageCount = Self.savedLatestImageCount
     @State private var imageDirection: MailDirection = .any
     @State private var imageCorrespondent = ""
     @State private var quickFilterTask: Task<Void, Never>?
@@ -282,7 +285,7 @@ struct SearchView: View {
     private var quickImageControls: some View {
         HStack(spacing: 8) {
             Button {
-                latestImageCount = max(1, latestImageCount - 1)
+                setLatestImageCount(latestImageCount - 1)
                 scheduleQuickImageRefresh(delayNanoseconds: 50_000_000)
             } label: {
                 Image(systemName: "minus")
@@ -308,7 +311,7 @@ struct SearchView: View {
             .help("Show these images without using AI")
 
             Button {
-                latestImageCount += 1
+                setLatestImageCount(latestImageCount + 1)
                 scheduleQuickImageRefresh(delayNanoseconds: 50_000_000)
             } label: {
                 Image(systemName: "plus")
@@ -360,6 +363,22 @@ struct SearchView: View {
                 correspondent: imageCorrespondent
             )
         }
+    }
+
+    private static var savedLatestImageCount: Int {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: latestImageCountDefaultsKey) != nil else {
+            return defaultLatestImageCount
+        }
+        return min(max(defaults.integer(forKey: latestImageCountDefaultsKey), 1), 10_000)
+    }
+
+    private func setLatestImageCount(_ count: Int) {
+        latestImageCount = min(max(count, 1), 10_000)
+        UserDefaults.standard.set(
+            latestImageCount,
+            forKey: Self.latestImageCountDefaultsKey
+        )
     }
 
     private var statusSymbol: String {

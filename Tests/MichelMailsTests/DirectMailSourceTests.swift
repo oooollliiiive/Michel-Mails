@@ -48,6 +48,39 @@ func directEmlxParsing() throws {
     #expect(extracted == Data([1, 2, 3, 4]))
 }
 
+@Test("Quoted attachment names may contain semicolons")
+func directEmlxQuotedSemicolonFilename() throws {
+    let boundary = "semicolon-boundary"
+    let fileName = "5193ae;khg-khgc0-f287-4864-b111-f915058c833e.png"
+    let payload = """
+    Content-Type: multipart/mixed; boundary="\(boundary)"\r
+    \r
+    --\(boundary)\r
+    Content-Type: image/png; name="\(fileName)"\r
+    Content-Disposition: attachment; filename="\(fileName)"\r
+    Content-Transfer-Encoding: base64\r
+    \r
+    AQIDBA==\r
+    --\(boundary)--\r
+
+    """
+    let messageData = Data(payload.utf8)
+    var emlx = Data("\(messageData.count)\n".utf8)
+    emlx.append(messageData)
+
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let URL = directory.appendingPathComponent("1.emlx")
+    try emlx.write(to: URL)
+
+    let parsed = try DirectEmlxReader.read(at: URL)
+    #expect(parsed.attachments.count == 1)
+    #expect(parsed.attachments[0].name == fileName)
+    #expect(parsed.attachments[0].sizeBytes == 4)
+}
+
 @Test("The direct Mail source exposes a fast index and a separate full-content pass")
 func directMailTwoPassScan() async throws {
     let root = FileManager.default.temporaryDirectory

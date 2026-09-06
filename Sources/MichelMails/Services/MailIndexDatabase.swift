@@ -424,7 +424,8 @@ actor MailIndexDatabase {
         let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
         let order = query.sortOrder == .oldestFirst ? "ASC" : "DESC"
         let maximumResults = query.allResults ? 100_000 : min(max(query.limit, 1), 100)
-        bindings.append(.integer(Int64(maximumResults)))
+        let fetchMaximum = query.allResults ? maximumResults : min(maximumResults * 4, 400)
+        bindings.append(.integer(Int64(fetchMaximum)))
 
         let SQL = """
         SELECT m.message_identifier, m.local_identifier, m.sender, m.subject,
@@ -475,7 +476,8 @@ actor MailIndexDatabase {
         for index in items.indices {
             items[index].attachments = attachments[messageKeys[index]] ?? []
         }
-        return MailSearchResults(items: items, query: query)
+        let deduplicated = MailResultDeduplicator.messages(items)
+        return MailSearchResults(items: Array(deduplicated.prefix(maximumResults)), query: query)
     }
 
     func searchAttachments(
@@ -536,7 +538,11 @@ actor MailIndexDatabase {
 
         let order = query.sortOrder == .oldestFirst ? "ASC" : "DESC"
         let maximumResults = query.allResults ? 100_000 : min(max(query.limit, 1), 100)
-        bindings.append(.integer(Int64(maximumResults)))
+        let isImageSearch = query.hasImage || requestedKinds.contains(.image)
+        let fetchMaximum = includePotentialParasites && isImageSearch
+            ? 100_000
+            : (query.allResults ? maximumResults : min(maximumResults * 4, 400))
+        bindings.append(.integer(Int64(fetchMaximum)))
         let SQL = """
         SELECT m.message_identifier, m.local_identifier, m.sender, m.subject,
                substr(m.body, 1, 240), m.received_at, m.account_name, m.mailbox_name,
@@ -559,7 +565,12 @@ actor MailIndexDatabase {
         while sqlite3_step(statement) == SQLITE_ROW {
             candidates.append(Self.attachmentCandidate(from: statement))
         }
-        return candidates
+        let deduplicated = MailResultDeduplicator.attachments(candidates)
+        return Self.limitedAttachmentCandidates(
+            deduplicated,
+            targetCount: maximumResults,
+            includePotentialParasites: includePotentialParasites && isImageSearch
+        )
     }
 
     /// Returns at least `targetCount` recent images without ever cutting an
@@ -616,22 +627,43 @@ actor MailIndexDatabase {
         defer { sqlite3_finalize(statement) }
         try bind(bindings, to: statement)
 
+        var candidates: [IndexedMailAttachmentCandidate] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            candidates.append(Self.attachmentCandidate(from: statement, offset: 1))
+        }
+        return Self.limitedAttachmentCandidates(
+            MailResultDeduplicator.attachments(candidates),
+            targetCount: max(targetCount, 1),
+            includePotentialParasites: includePotentialParasites
+        )
+    }
+
+    private static func limitedAttachmentCandidates(
+        _ candidates: [IndexedMailAttachmentCandidate],
+        targetCount: Int,
+        includePotentialParasites: Bool
+    ) -> [IndexedMailAttachmentCandidate] {
         let target = max(targetCount, 1)
         var result: [IndexedMailAttachmentCandidate] = []
-        var currentMessageKey: String?
-        var currentMessageImages: [IndexedMailAttachmentCandidate] = []
+        var index = 0
+        var countedImages = 0
 
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let messageKey = Self.text(at: 0, in: statement)
-            if let currentMessageKey, currentMessageKey != messageKey {
-                result.append(contentsOf: currentMessageImages)
-                if result.count >= target { return result }
-                currentMessageImages.removeAll(keepingCapacity: true)
+        while index < candidates.count {
+            let key = MailResultDeduplicator.logicalMessageKey(candidates[index])
+            let start = index
+            while index < candidates.count,
+                  MailResultDeduplicator.logicalMessageKey(candidates[index]) == key {
+                index += 1
             }
-            currentMessageKey = messageKey
-            currentMessageImages.append(Self.attachmentCandidate(from: statement, offset: 1))
+            let group = Array(candidates[start..<index])
+            let usefulImages = includePotentialParasites
+                ? group.filter { !$0.isPotentialParasite }
+                : group
+            guard !usefulImages.isEmpty else { continue }
+            result.append(contentsOf: group)
+            countedImages += usefulImages.count
+            if countedImages >= target { break }
         }
-        result.append(contentsOf: currentMessageImages)
         return result
     }
 
