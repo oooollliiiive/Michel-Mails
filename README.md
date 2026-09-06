@@ -37,6 +37,7 @@ Le MVP comprend :
 - des interrupteurs pour contrôler l’affichage des images parasites et des emails classés Junk ;
 - une grille universelle inspirée de Michel OS pour les images, PDF, documents, tableurs, présentations, archives, fichiers audio et vidéo ;
 - un mode `Select` inspiré d’iOS : sélection unique sans badge par défaut, clic sur le fichier déjà sélectionné pour le désélectionner, et multiselection uniquement lorsqu’il est activé ;
+- la prise en compte du premier clic sur une vignette même lorsque Michel Mails revient de l’arrière-plan ;
 - la mémorisation du nombre choisi dans le bouton `Last Images` entre deux lancements ;
 - des vignettes non bloquantes pour les formats d’image reconnus par macOS, la première page des PDF et les vidéos, avec le nom et la date du fichier ;
 - le glisser-déposer des fichiers vers le Finder ou une autre application ;
@@ -44,12 +45,15 @@ Le MVP comprend :
 - une préparation automatique des vignettes : les fichiers locaux sont traités en parallèle et les pièces jointes manquantes sont demandées à Mail sans clic ;
 - des récupérations auprès de Mail exécutées une par une afin de préserver sa réactivité, toujours priorisées du fichier le plus récent au plus ancien ;
 - des vignettes persistantes conservées indépendamment des originaux et réutilisées aux lancements suivants ;
+- un cache mémoire des vignettes déjà affichées, pour éviter le bref retour d’un indicateur de téléchargement pendant le défilement ;
 - un cache temporaire des originaux conservé pendant 7 jours après leur dernière utilisation, afin de ne pas redemander plusieurs fois le même fichier à Mail ;
 - le refus systématique des fichiers vides ou incomplets avant toute copie ;
 - une colonne `Downloads` compacte intégrée à droite de la fenêtre principale, ouverte automatiquement, refermable et consultable à la demande, ainsi qu’une destination commune `Desktop/Files from Mails`, directement visible par Michel OS ;
 - la disparition automatique d’une ligne de téléchargement réussi après deux secondes, tandis que les erreurs restent visibles ;
-- un bouton temporaire de diagnostic `Cancel Thumbnails`, qui interrompt la file, vide les vignettes et originaux du cache privé, puis relance automatiquement la grille sans toucher aux fichiers du Bureau ;
+- un bouton temporaire de diagnostic `Reset Thumbnails` placé directement dans l’en-tête de la grille : il interrompt la file, vide les vignettes et originaux du cache privé, puis relance automatiquement la grille sans toucher aux fichiers du Bureau ;
 - une ouverture d’email qui utilise d’abord son fichier local indexé, avec un état visible `Opening…` et un résultat explicite dans la grille ;
+- la réparation automatique d’une référence devenue obsolète après le déplacement ou la suppression d’un email : une copie locale compatible de la même pièce jointe est utilisée, sinon la carte morte est retirée ;
+- la fermeture automatique de la colonne `Downloads` lorsque la grille est fermée ;
 - la fusion des anciennes et nouvelles identités d’un même email et la lecture correcte des noms de pièces jointes contenant un point-virgule ;
 - une grille horizontale qui répond aussi à la molette verticale d’une souris classique ;
 - une confirmation avant de copier des images dans un dossier ;

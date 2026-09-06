@@ -6,6 +6,10 @@ final class PromptPanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let promptWidth: CGFloat = 720
@@ -127,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.standardWindowButton(.zoomButton)?.isHidden = false
         panel.standardWindowButton(.zoomButton)?.isEnabled = false
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = false
-        panel.contentView = NSHostingView(
+        panel.contentView = FirstMouseHostingView(
             rootView: SearchView(
                 viewModel: viewModel,
                 indexController: indexController,

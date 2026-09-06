@@ -224,7 +224,10 @@ func missingPreviewStartsRemoteDownload() {
         attachmentName: "remote.jpg",
         MIMEType: "image/jpeg",
         sizeBytes: 12_000,
-        kind: .image
+        kind: .image,
+        sourcePath: FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-indexed-preview.jpg")
+            .path
     )
     let manager = AttachmentDownloadManager(startsTransfersAutomatically: false)
 

@@ -22,6 +22,7 @@ final class AttachmentDownloadManager: ObservableObject {
     private var transferTasks: [String: Task<Void, Never>] = [:]
     private var transferGeneration = 0
     private var lastPreparedCandidates: [IndexedMailAttachmentCandidate] = []
+    private let memoryThumbnailCache = NSCache<NSString, NSImage>()
 
     init(startsTransfersAutomatically: Bool = true) {
         self.startsTransfersAutomatically = startsTransfersAutomatically
@@ -62,6 +63,19 @@ final class AttachmentDownloadManager: ObservableObject {
             ?? AttachmentMaterializer.directlyAvailableFile(for: candidate)
     }
 
+    func cachedImage(at URL: URL) -> NSImage? {
+        let key = URL.path as NSString
+        if let image = memoryThumbnailCache.object(forKey: key) { return image }
+        guard FileManager.default.fileExists(atPath: URL.path),
+              let image = NSImage(contentsOf: URL) else { return nil }
+        memoryThumbnailCache.setObject(image, forKey: key)
+        return image
+    }
+
+    func rememberImage(_ image: NSImage, at URL: URL) {
+        memoryThumbnailCache.setObject(image, forKey: URL.path as NSString)
+    }
+
     func prepareThumbnails(_ candidates: [IndexedMailAttachmentCandidate]) {
         lastPreparedCandidates = candidates
         presentedAutomaticDownloads = false
@@ -78,7 +92,7 @@ final class AttachmentDownloadManager: ObservableObject {
             let existingThumbnail = PersistentThumbnailStore.existingThumbnailURL(for: candidate)
             let hasLocallyAvailableSource = PersistentAttachmentStore.existingOriginalURL(
                 for: candidate
-            ) != nil || !candidate.sourcePath.isEmpty
+            ) != nil || AttachmentMaterializer.hasLocallyAvailableSource(for: candidate)
             var record = updatedRecords[key] ?? AttachmentTransferRecord(
                 candidate: candidate,
                 state: existingThumbnail == nil && !hasLocallyAvailableSource ? .available : .queued,
@@ -230,6 +244,7 @@ final class AttachmentDownloadManager: ObservableObject {
         mailCooldown = false
         records.removeAll()
         orderedKeys.removeAll()
+        memoryThumbnailCache.removeAllObjects()
         cacheResetGeneration &+= 1
         let candidates = lastPreparedCandidates
 

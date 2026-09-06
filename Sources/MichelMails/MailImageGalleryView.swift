@@ -14,7 +14,6 @@ struct MailImageGalleryView: View {
     @State private var selectionOrder: [UUID] = []
     @State private var selectionModeEnabled = false
     @State private var cardFrames: [UUID: CGRect] = [:]
-    @State private var statusMessage = "Select files · drag them anywhere or copy and paste"
     @State private var transientMessage: String?
     @State private var transientMessageTask: Task<Void, Never>?
     @State private var openingMailItemID: UUID?
@@ -99,9 +98,6 @@ struct MailImageGalleryView: View {
                 }
             }
             .background(Color(nsColor: .underPageBackgroundColor))
-
-            Divider()
-            footer
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .bottom) {
@@ -113,7 +109,7 @@ struct MailImageGalleryView: View {
                     .padding(.vertical, 8)
                     .background(.black.opacity(0.78), in: Capsule())
                     .shadow(radius: 5, y: 2)
-                    .padding(.bottom, 50)
+                    .padding(.bottom, 12)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -182,6 +178,22 @@ struct MailImageGalleryView: View {
             Divider()
                 .frame(height: 20)
 
+            Button(role: .destructive) {
+                showTransientMessage(
+                    "Clearing thumbnails and cached originals…",
+                    durationNanoseconds: 4_000_000_000
+                )
+                downloadManager.resetPreviewCaches()
+            } label: {
+                Label(
+                    downloadManager.isResettingCaches ? "Resetting…" : "Reset Thumbnails",
+                    systemImage: "trash"
+                )
+                .font(.system(size: 11, weight: .semibold))
+            }
+            .disabled(downloadManager.isResettingCaches)
+            .help("Cancel preview downloads, clear all cached thumbnails and cached originals, then restart this gallery. Files saved on the Desktop are not deleted.")
+
             Button {
                 toggleSelectionMode()
             } label: {
@@ -214,40 +226,9 @@ struct MailImageGalleryView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .background(.ultraThinMaterial)
-    }
-
-    private var footer: some View {
-        HStack {
-            Image(systemName: selectedIDs.isEmpty ? "cursorarrow.click" : "checkmark.circle.fill")
-                .foregroundStyle(selectedIDs.isEmpty ? Color.secondary : Color.accentColor)
-            Text(statusMessage)
-                .lineLimit(1)
-            Spacer()
-            Button(role: .destructive) {
-                statusMessage = "Clearing thumbnails and cached originals…"
-                downloadManager.resetPreviewCaches()
-            } label: {
-                Label(
-                    downloadManager.isResettingCaches ? "Cancelling…" : "Cancel Thumbnails",
-                    systemImage: "trash"
-                )
-            }
-            .buttonStyle(.borderless)
-            .disabled(downloadManager.isResettingCaches)
-            .help("Cancel preview downloads, clear all cached thumbnails and cached originals, then restart this gallery. Files saved on the Desktop are not deleted.")
-
-            if !selectedIDs.isEmpty {
-                Text(selectedIDs.count == 1 ? "1 selected" : "\(selectedIDs.count) selected")
-                    .fontWeight(.medium)
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 18)
-        .frame(height: 42)
         .onChange(of: downloadManager.isResettingCaches) { isResetting in
             if !isResetting {
-                statusMessage = "Thumbnail cache cleared · previews restarted"
+                showTransientMessage("Thumbnail cache cleared · previews restarted")
             }
         }
     }
@@ -474,9 +455,6 @@ struct MailImageGalleryView: View {
             selectionOrder.removeAll { $0 == item.id }
             selectionOrder.append(item.id)
         }
-        statusMessage = selectedIDs.isEmpty
-            ? "Select a file"
-            : "Drag files, copy them, or save them"
     }
 
     private func toggleSelectionMode() {
@@ -487,17 +465,11 @@ struct MailImageGalleryView: View {
             selectedIDs = [lastSelectedID]
             selectionOrder = [lastSelectedID]
         }
-        statusMessage = selectionModeEnabled
-            ? "Multiple selection is on"
-            : "Single selection is on"
     }
 
     private func unselectAll() {
         selectedIDs.removeAll()
         selectionOrder.removeAll()
-        statusMessage = selectionModeEnabled
-            ? "Multiple selection is on"
-            : "Select a file"
     }
 
     private func saveSelectedToDesktop() {
@@ -582,7 +554,7 @@ struct MailImageGalleryView: View {
         if !unavailable.isEmpty {
             let candidates = unavailable.compactMap(\.sourceCandidate)
             downloadManager.downloadAttachmentsToDesktop(candidates)
-            statusMessage = "Original file unavailable · download queued in Files from Mails"
+            showTransientMessage("Original file unavailable · download queued in Files from Mails")
             return
         }
 
@@ -607,11 +579,13 @@ struct MailImageGalleryView: View {
         }
 
         if didCopy {
-            statusMessage = items.count == 1
-                ? "File copied · paste it anywhere"
-                : "\(items.count) files copied · paste them anywhere"
+            showTransientMessage(
+                items.count == 1
+                    ? "File copied · paste it anywhere"
+                    : "\(items.count) files copied · paste them anywhere"
+            )
         } else {
-            statusMessage = "Could not copy the selected files."
+            showTransientMessage("Could not copy the selected files.")
         }
     }
 
@@ -733,17 +707,21 @@ private struct GalleryThumbnail: View {
         "\(downloadManager.cacheResetGeneration)|\(displayURL?.path ?? "missing")"
     }
 
+    private var immediatelyAvailableImage: NSImage? {
+        displayURL.flatMap(downloadManager.cachedImage)
+    }
+
     var body: some View {
         Group {
-            if let image {
+            if let renderedImage = image ?? immediatelyAvailableImage {
                 ZStack {
                     if isFallback || (item.kind != .image && item.kind != .video) {
-                        Image(nsImage: image)
+                        Image(nsImage: renderedImage)
                             .resizable()
                             .scaledToFit()
                             .padding(isFallback ? 20 : 3)
                     } else {
-                        Image(nsImage: image)
+                        Image(nsImage: renderedImage)
                             .resizable()
                             .scaledToFit()
                     }
@@ -811,6 +789,11 @@ private struct GalleryThumbnail: View {
                 isFallback = false
                 return
             }
+            if let cachedImage = downloadManager.cachedImage(at: displayURL) {
+                image = cachedImage
+                isFallback = false
+                return
+            }
             let result = await GalleryThumbnailService.thumbnail(
                 at: displayURL,
                 kind: item.kind,
@@ -818,6 +801,7 @@ private struct GalleryThumbnail: View {
             )
             image = result.isFallback && item.kind == .image ? nil : result.image
             isFallback = result.isFallback
+            if image != nil { downloadManager.rememberImage(result.image, at: displayURL) }
         }
     }
 }

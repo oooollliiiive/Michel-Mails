@@ -566,8 +566,9 @@ actor MailIndexDatabase {
             candidates.append(Self.attachmentCandidate(from: statement))
         }
         let deduplicated = MailResultDeduplicator.attachments(candidates)
+        let repaired = try repairStaleAttachmentReferences(deduplicated)
         return Self.limitedAttachmentCandidates(
-            deduplicated,
+            MailResultDeduplicator.attachments(repaired),
             targetCount: maximumResults,
             includePotentialParasites: includePotentialParasites && isImageSearch
         )
@@ -631,11 +632,184 @@ actor MailIndexDatabase {
         while sqlite3_step(statement) == SQLITE_ROW {
             candidates.append(Self.attachmentCandidate(from: statement, offset: 1))
         }
+        let deduplicated = MailResultDeduplicator.attachments(candidates)
+        let oversampled = Self.limitedAttachmentCandidates(
+            deduplicated,
+            targetCount: max(targetCount * 4, targetCount + 24),
+            includePotentialParasites: includePotentialParasites
+        )
+        let repaired = try repairStaleAttachmentReferences(oversampled)
         return Self.limitedAttachmentCandidates(
-            MailResultDeduplicator.attachments(candidates),
+            MailResultDeduplicator.attachments(repaired),
             targetCount: max(targetCount, 1),
             includePotentialParasites: includePotentialParasites
         )
+    }
+
+    private func repairStaleAttachmentReferences(
+        _ candidates: [IndexedMailAttachmentCandidate]
+    ) throws -> [IndexedMailAttachmentCandidate] {
+        var liveByIdentity: [AttachmentRecoveryIdentity: [IndexedMailAttachmentCandidate]] = [:]
+        for candidate in candidates where AttachmentMaterializer.hasLocallyAvailableSource(for: candidate) {
+            liveByIdentity[Self.recoveryIdentity(for: candidate), default: []].append(candidate)
+        }
+
+        var loadedIdentities: Set<AttachmentRecoveryIdentity> = []
+        var result: [IndexedMailAttachmentCandidate] = []
+        var seenStableKeys: Set<String> = []
+        for original in candidates {
+            var candidate = original
+            if !candidate.sourcePath.isEmpty,
+               !AttachmentMaterializer.hasLocallyAvailableSource(for: candidate) {
+                let identity = Self.recoveryIdentity(for: candidate)
+                if !loadedIdentities.contains(identity) {
+                    loadedIdentities.insert(identity)
+                    let alternatives = try recoveryCandidates(for: candidate).filter {
+                        AttachmentMaterializer.hasLocallyAvailableSource(for: $0)
+                    }
+                    liveByIdentity[identity, default: []].append(contentsOf: alternatives)
+                }
+
+                if let replacement = Self.bestRecoveryCandidate(
+                    for: candidate,
+                    among: liveByIdentity[identity] ?? []
+                ) {
+                    candidate = replacement
+                } else if Self.fileIsPresent(at: candidate.messageSourcePath),
+                          candidate.attachmentIdentifier != "file" {
+                    candidate.sourcePath = candidate.messageSourcePath
+                } else if candidate.attachmentIdentifier == "file",
+                          !candidate.messageSourcePath.isEmpty,
+                          !Self.fileIsPresent(at: candidate.messageSourcePath) {
+                    // Both indexed files disappeared: this email was moved or
+                    // deleted after the scan and must not leave a dead card.
+                    continue
+                } else {
+                    // No local file was promised. Keep the candidate remote so
+                    // Mail can still download it normally.
+                    candidate.sourcePath = ""
+                }
+            }
+
+            if seenStableKeys.insert(candidate.stableKey).inserted {
+                result.append(candidate)
+            }
+        }
+        return result
+    }
+
+    private func recoveryCandidates(
+        for candidate: IndexedMailAttachmentCandidate
+    ) throws -> [IndexedMailAttachmentCandidate] {
+        guard candidate.sizeBytes > 0 else { return [] }
+        let SQL = """
+        SELECT m.message_identifier, m.local_identifier, m.sender, m.subject,
+               substr(m.body, 1, 240), m.received_at, m.account_name, m.mailbox_name,
+               m.source_path, a.attachment_identifier, a.name, a.mime_type, a.size_bytes, a.kind,
+               CASE WHEN a.source_path <> '' THEN a.source_path ELSE m.source_path END,
+               a.is_useful_image
+        FROM attachments a
+        JOIN messages m ON m.message_key = a.message_key
+        WHERE lower(a.name) = lower(?) AND a.size_bytes = ? AND a.kind = ?
+        ORDER BY m.received_at DESC
+        """
+        guard let statement = try prepare(SQL) else {
+            throw MichelMailsError.index("A replacement attachment could not be located.")
+        }
+        defer { sqlite3_finalize(statement) }
+        try bind(
+            [
+                .text(candidate.attachmentName),
+                .integer(candidate.sizeBytes),
+                .text(candidate.kind.rawValue)
+            ],
+            to: statement
+        )
+        var result: [IndexedMailAttachmentCandidate] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            result.append(Self.attachmentCandidate(from: statement))
+        }
+        return result
+    }
+
+    private struct AttachmentRecoveryIdentity: Hashable {
+        let name: String
+        let sizeBytes: Int64
+        let kind: MailAttachmentKind
+    }
+
+    private static func recoveryIdentity(
+        for candidate: IndexedMailAttachmentCandidate
+    ) -> AttachmentRecoveryIdentity {
+        AttachmentRecoveryIdentity(
+            name: candidate.attachmentName
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                .lowercased(),
+            sizeBytes: candidate.sizeBytes,
+            kind: candidate.kind
+        )
+    }
+
+    private static func bestRecoveryCandidate(
+        for original: IndexedMailAttachmentCandidate,
+        among candidates: [IndexedMailAttachmentCandidate]
+    ) -> IndexedMailAttachmentCandidate? {
+        candidates
+            .filter {
+                $0.stableKey != original.stableKey &&
+                    recoveryCandidateIsCompatible($0, with: original)
+            }
+            .max { recoveryScore($0, for: original) < recoveryScore($1, for: original) }
+    }
+
+    private static func recoveryCandidateIsCompatible(
+        _ candidate: IndexedMailAttachmentCandidate,
+        with original: IndexedMailAttachmentCandidate
+    ) -> Bool {
+        let sameSender = normalizedRecoveryText(candidate.sender) == normalizedRecoveryText(original.sender)
+        let sameSubject = normalizedRecoveryText(candidate.subject) == normalizedRecoveryText(original.subject)
+        guard sameSubject else { return false }
+        guard let candidateDate = candidate.receivedAt, let originalDate = original.receivedAt else {
+            return sameSender
+        }
+        return sameSender || abs(candidateDate.timeIntervalSince(originalDate)) <= 24 * 60 * 60
+    }
+
+    private static func recoveryScore(
+        _ candidate: IndexedMailAttachmentCandidate,
+        for original: IndexedMailAttachmentCandidate
+    ) -> Int {
+        var score = 0
+        if normalizedRecoveryText(candidate.sender) == normalizedRecoveryText(original.sender) {
+            score += 10_000
+        }
+        if normalizedRecoveryText(candidate.subject) == normalizedRecoveryText(original.subject) {
+            score += 5_000
+        }
+        if candidate.accountName == original.accountName { score += 1_000 }
+        let mailbox = normalizedRecoveryText(candidate.mailboxName)
+        if !mailbox.contains("trash") && !mailbox.contains("deleted") { score += 500 }
+        if let candidateDate = candidate.receivedAt, let originalDate = original.receivedAt {
+            score -= min(Int(abs(candidateDate.timeIntervalSince(originalDate)) / 60), 400)
+        }
+        return score
+    }
+
+    private static func normalizedRecoveryText(_ value: String) -> String {
+        value
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func fileIsPresent(at path: String) -> Bool {
+        guard !path.isEmpty else { return false }
+        let URL = URL(fileURLWithPath: path)
+        guard let values = try? URL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) else {
+            return false
+        }
+        return values.isRegularFile == true && (values.fileSize ?? 0) > 0
     }
 
     private static func limitedAttachmentCandidates(

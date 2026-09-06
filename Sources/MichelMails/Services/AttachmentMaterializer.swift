@@ -31,12 +31,28 @@ enum AttachmentMaterializer {
         guard !candidate.sourcePath.isEmpty else { return nil }
         let sourceURL = URL(fileURLWithPath: candidate.sourcePath)
         let lowerName = sourceURL.lastPathComponent.lowercased()
-        guard candidate.attachmentIdentifier == "file" ||
-                (!lowerName.hasSuffix(".emlx") && !lowerName.hasSuffix(".partial.emlx")),
+        guard !lowerName.hasSuffix(".emlx") && !lowerName.hasSuffix(".partial.emlx"),
               isCompleteFile(at: sourceURL, candidate: candidate) else {
             return nil
         }
         return sourceURL
+    }
+
+    static func hasLocallyAvailableSource(
+        for candidate: IndexedMailAttachmentCandidate
+    ) -> Bool {
+        guard !candidate.sourcePath.isEmpty else { return false }
+        let sourceURL = URL(fileURLWithPath: candidate.sourcePath)
+        guard let values = try? sourceURL.resourceValues(
+            forKeys: [.isRegularFileKey, .fileSizeKey]
+        ), values.isRegularFile == true, (values.fileSize ?? 0) > 0 else {
+            return false
+        }
+        let lowerName = sourceURL.lastPathComponent.lowercased()
+        if lowerName.hasSuffix(".emlx") || lowerName.hasSuffix(".partial.emlx") {
+            return candidate.attachmentIdentifier != "file"
+        }
+        return isCompleteFile(at: sourceURL, candidate: candidate)
     }
 
     static func materialize(
@@ -155,10 +171,10 @@ enum AttachmentMaterializer {
             let sourceURL = URL(fileURLWithPath: candidate.sourcePath)
             do {
                 let lowerName = sourceURL.lastPathComponent.lowercased()
-                if candidate.attachmentIdentifier == "file" ||
-                    (!lowerName.hasSuffix(".emlx") && !lowerName.hasSuffix(".partial.emlx")) {
+                if !lowerName.hasSuffix(".emlx") && !lowerName.hasSuffix(".partial.emlx") {
                     try FileManager.default.copyItem(at: sourceURL, to: destination)
                 } else {
+                    guard candidate.attachmentIdentifier != "file" else { return false }
                     guard let data = try DirectEmlxReader.extractAttachment(
                         identifier: candidate.attachmentIdentifier,
                         preferredName: candidate.attachmentName,

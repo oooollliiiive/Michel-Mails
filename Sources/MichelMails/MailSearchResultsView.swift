@@ -234,11 +234,15 @@ private struct EmailAttachmentThumbnail: View {
         "\(downloadManager.cacheResetGeneration)|\(thumbnailURL?.path ?? "missing")"
     }
 
+    private var immediatelyAvailableImage: NSImage? {
+        thumbnailURL.flatMap(downloadManager.cachedImage)
+    }
+
     var body: some View {
         ZStack {
             Color(nsColor: .controlBackgroundColor)
-            if let image {
-                Image(nsImage: image)
+            if let renderedImage = image ?? immediatelyAvailableImage {
+                Image(nsImage: renderedImage)
                     .resizable()
                     .scaledToFill()
             } else if record?.state == .failed {
@@ -287,7 +291,7 @@ private struct EmailAttachmentThumbnail: View {
                 image = nil
                 return
             }
-            image = NSImage(contentsOf: thumbnailURL)
+            image = downloadManager.cachedImage(at: thumbnailURL)
         }
     }
 }

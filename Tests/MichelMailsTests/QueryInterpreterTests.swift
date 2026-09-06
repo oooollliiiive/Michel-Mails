@@ -450,6 +450,18 @@ func duplicateMailIdentityDeduplication() async throws {
 
     let database = try MailIndexDatabase(databaseURL: directory.appendingPathComponent("dedup.sqlite"))
     let date = Date(timeIntervalSince1970: 1_788_500_222)
+    let localAttachmentURL = directory.appendingPathComponent(
+        "5193ae;khg-khgc0-f287-4864-b111-f915058c833e.png"
+    )
+    let localMessageURL = directory.appendingPathComponent("19.partial.emlx")
+    let fixtureImageData = try #require(Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    ))
+    try fixtureImageData.write(to: localAttachmentURL)
+    let localAttachmentHandle = try FileHandle(forWritingTo: localAttachmentURL)
+    try localAttachmentHandle.truncate(atOffset: 8_005_587)
+    try localAttachmentHandle.close()
+    try Data("fixture".utf8).write(to: localMessageURL)
     let legacyAttachment = IndexedMailAttachment(
         identifier: "2",
         name: "5193ae;khg-khgc0-f287-4864-b111-f915058c833e.png",
@@ -476,7 +488,7 @@ func duplicateMailIdentityDeduplication() async throws {
         isImage: true,
         isUsefulImage: true,
         isDownloaded: true,
-        sourcePath: "/private/tmp/real-image.png"
+        sourcePath: localAttachmentURL.path
     )
     let sharedValues = (
         sender: "Michel Gondry <mgondry@mac.com>",
@@ -511,7 +523,7 @@ func duplicateMailIdentityDeduplication() async throws {
             accountName: "ACCOUNT-ID",
             isSent: false,
             attachments: [phantomAttachment, localAttachment],
-            sourcePath: "/private/tmp/19.partial.emlx"
+            sourcePath: localMessageURL.path
         )
     ]
     _ = try await database.saveDirectMetadata(
@@ -540,6 +552,101 @@ func duplicateMailIdentityDeduplication() async throws {
     let emails = try await database.searchMessages(MailQuery(keywords: ["cozy"]))
     #expect(emails.items.count == 1)
     #expect(emails.items[0].reference.mailboxName == "All Mail")
+}
+
+@Test("A stale Trash attachment resolves to the surviving local email copy")
+func staleAttachmentRecovery() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let database = try MailIndexDatabase(databaseURL: directory.appendingPathComponent("stale.sqlite"))
+    let imageData = try #require(Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    ))
+    let liveImageURL = directory.appendingPathComponent("14x10_backing2B.png")
+    let liveMessageURL = directory.appendingPathComponent("41.partial.emlx")
+    try imageData.write(to: liveImageURL)
+    try Data("live email".utf8).write(to: liveMessageURL)
+
+    let liveAttachment = IndexedMailAttachment(
+        identifier: "file",
+        name: "14x10_backing2B.png",
+        MIMEType: "image/png",
+        sizeBytes: Int64(imageData.count),
+        isImage: true,
+        isUsefulImage: true,
+        isDownloaded: true,
+        sourcePath: liveImageURL.path
+    )
+    let staleAttachment = IndexedMailAttachment(
+        identifier: "file",
+        name: liveAttachment.name,
+        MIMEType: liveAttachment.MIMEType,
+        sizeBytes: liveAttachment.sizeBytes,
+        isImage: true,
+        isUsefulImage: true,
+        isDownloaded: true,
+        sourcePath: directory.appendingPathComponent("missing-image.png").path
+    )
+    let baseDate = Date(timeIntervalSince1970: 1_788_575_000)
+    let messages = [
+        IndexedMailMessage(
+            messageIdentifier: "live-message",
+            localIdentifier: "41",
+            sender: "Jeffrey Higinbotham <jhiginbotham@me.com>",
+            recipients: "Michel <michel@example.com>",
+            subject: "Re: 8 new versions.",
+            body: "Live copy",
+            receivedAt: baseDate,
+            sizeBytes: 2_050_117,
+            mailboxName: "All Mail",
+            accountName: "Google",
+            isSent: false,
+            attachments: [liveAttachment],
+            sourcePath: liveMessageURL.path
+        ),
+        IndexedMailMessage(
+            messageIdentifier: "stale-message",
+            localIdentifier: "695",
+            sender: "Jeffrey Higinbotham <jhiginbotham@me.com>",
+            recipients: "Michel <michel@example.com>",
+            subject: "Re: 8 new versions.",
+            body: "Deleted copy",
+            receivedAt: baseDate.addingTimeInterval(292),
+            sizeBytes: 2_050_187,
+            mailboxName: "Trash",
+            accountName: "Google",
+            isSent: false,
+            attachments: [staleAttachment],
+            sourcePath: directory.appendingPathComponent("695.partial.emlx").path
+        )
+    ]
+    _ = try await database.saveDirectMetadata(
+        DirectMailScanBatch(
+            messages: messages,
+            nextRowID: 695,
+            attemptedCount: 2,
+            failureCount: 0,
+            isFinished: true
+        ),
+        total: 2,
+        previous: MailScanProgress(total: 2, phase: .metadata)
+    )
+
+    let results = try await database.latestImageAttachments(
+        targetCount: 1,
+        direction: .received,
+        correspondent: "Jeffrey"
+    )
+
+    #expect(results.count == 1)
+    #expect(results[0].messageIdentifier == "live-message")
+    #expect(results[0].localIdentifier == "41")
+    #expect(results[0].mailboxName == "All Mail")
+    #expect(results[0].sourcePath == liveImageURL.path)
+    #expect(results[0].message.reference.sourcePath == liveMessageURL.path)
 }
 
 @Test("The partial local index searches words, file kinds, and oldest order")
