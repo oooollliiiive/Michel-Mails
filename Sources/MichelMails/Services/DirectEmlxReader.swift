@@ -54,7 +54,20 @@ enum DirectEmlxReader {
         preferredName: String? = nil,
         from URL: URL
     ) throws -> Data? {
-        let root = parsePart(try messageData(at: URL), identifier: "1")
+        try extractAttachment(
+            identifier: identifier,
+            preferredName: preferredName,
+            fromMessageData: messageData(at: URL)
+        )
+    }
+
+    static func extractAttachment(
+        identifier: String,
+        preferredName: String? = nil,
+        fromMessageData data: Data
+    ) throws -> Data? {
+        guard data.count <= maximumMessageBytes else { throw DirectEmlxError.tooLarge }
+        let root = parsePart(data, identifier: "1")
         let attachments = attachmentParts(in: root)
         let indexedPosition = identifier.hasPrefix("index-")
             ? Int(identifier.dropFirst("index-".count)).map { $0 - 1 }

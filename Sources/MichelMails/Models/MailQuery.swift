@@ -148,6 +148,12 @@ enum AttachmentTransferState: String, Equatable, Sendable {
     case failed
 }
 
+enum AttachmentTransferRoute: String, Equatable, Sendable {
+    case local
+    case direct
+    case appleMail
+}
+
 struct AttachmentTransferRecord: Identifiable, Equatable, Sendable {
     var id: String { candidate.stableKey }
     var candidate: IndexedMailAttachmentCandidate
@@ -163,6 +169,8 @@ struct AttachmentTransferRecord: Identifiable, Equatable, Sendable {
     var shouldCacheOriginal = false
     var isVisibleInDownloads = false
     var openWhenReady = false
+    var activeRoute: AttachmentTransferRoute?
+    var failedRoute: AttachmentTransferRoute?
     var errorMessage: String?
 }
 

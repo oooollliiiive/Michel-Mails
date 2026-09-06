@@ -542,12 +542,12 @@ private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Artificial Intelligence")
+                    Text("Michel Mails Settings")
                         .font(.title2.weight(.semibold))
-                    Text("Your key is stored privately on this Mac.")
+                    Text("Keys and app-specific passwords stay private on this Mac.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -562,22 +562,87 @@ private struct SettingsView: View {
                 .buttonStyle(.plain)
             }
 
-            Form {
-                Toggle(
-                    "Use OpenAI to understand searches",
-                    isOn: Binding(
-                        get: { viewModel.usesOpenAI },
-                        set: viewModel.setAIInterpretation
-                    )
-                )
-                SecureField("OpenAI API key", text: $viewModel.APIKeyDraft)
-                TextField("Model", text: $viewModel.modelDraft)
-            }
-            .formStyle(.grouped)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    GroupBox("Artificial Intelligence") {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Toggle(
+                                "Use OpenAI to understand searches",
+                                isOn: Binding(
+                                    get: { viewModel.usesOpenAI },
+                                    set: viewModel.setAIInterpretation
+                                )
+                            )
+                            SecureField("OpenAI API key", text: $viewModel.APIKeyDraft)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("Model", text: $viewModel.modelDraft)
+                                .textFieldStyle(.roundedBorder)
+                            Text("Only your prompt and the current date are sent to OpenAI. Email contents stay on this Mac.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(6)
+                    }
 
-            Text("When AI is on, only your prompt and the current date are sent to OpenAI. When it is off, interpretation stays local. Email contents always stay on this Mac.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                    GroupBox("Direct Downloads") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(
+                                "Download directly from Gmail and iCloud",
+                                isOn: $viewModel.directMailDownloadsEnabledDraft
+                            )
+
+                            ForEach($viewModel.directMailAccountsDraft) { $account in
+                                DirectMailAccountEditor(
+                                    account: $account,
+                                    onRemove: {
+                                        viewModel.removeDirectMailAccount(id: account.id)
+                                    }
+                                )
+                            }
+
+                            HStack(spacing: 8) {
+                                Button("Add Gmail", systemImage: "plus") {
+                                    viewModel.addDirectMailAccount(provider: .gmail)
+                                }
+                                Button("Add iCloud", systemImage: "plus") {
+                                    viewModel.addDirectMailAccount(provider: .iCloud)
+                                }
+                                Spacer()
+                                Button("Test Connections") {
+                                    viewModel.testDirectMailAccounts()
+                                }
+                                .disabled(viewModel.isTestingDirectMail)
+                            }
+                            .controlSize(.small)
+
+                            if !viewModel.directMailTestStatus.isEmpty {
+                                Text(viewModel.directMailTestStatus)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+
+                            HStack(spacing: 12) {
+                                Link(
+                                    "Create Google app password",
+                                    destination: URL(string: "https://myaccount.google.com/apppasswords")!
+                                )
+                                Link(
+                                    "Create Apple app-specific password",
+                                    destination: URL(string: "https://account.apple.com/account/manage")!
+                                )
+                            }
+                            .font(.system(size: 10))
+
+                            Text("Direct downloads use encrypted IMAP connections and do not control or foreground Apple Mail. Disable this switch at any time to return to the existing Mail-based download path.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(6)
+                    }
+                }
+                .padding(.trailing, 4)
+            }
 
             HStack {
                 Spacer()
@@ -586,7 +651,48 @@ private struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
             }
         }
-        .padding(24)
-        .frame(width: 500, height: 330)
+        .padding(20)
+        .frame(width: 640, height: 620)
+    }
+}
+
+private struct DirectMailAccountEditor: View {
+    @Binding var account: DirectMailAccountConfiguration
+    let onRemove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Picker("Provider", selection: $account.provider) {
+                    ForEach(DirectMailProvider.allCases) { provider in
+                        Text(provider.displayName).tag(provider)
+                    }
+                }
+                .frame(width: 210)
+                Toggle("Enabled", isOn: $account.isEnabled)
+                    .toggleStyle(.checkbox)
+                Spacer()
+                Button(action: onRemove) {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove Account")
+            }
+
+            HStack(spacing: 8) {
+                TextField("Email address", text: $account.emailAddress)
+                    .textFieldStyle(.roundedBorder)
+                TextField("IMAP username (optional)", text: $account.username)
+                    .textFieldStyle(.roundedBorder)
+            }
+            SecureField("App-specific password", text: $account.appPassword)
+                .textFieldStyle(.roundedBorder)
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
+        )
     }
 }

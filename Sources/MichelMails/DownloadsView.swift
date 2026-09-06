@@ -39,15 +39,27 @@ struct DownloadsSidebarView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Button {
                 manager.showDestinationFolder()
             } label: {
                 Label("Files", systemImage: "folder")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 8.5, weight: .semibold))
             }
             .buttonStyle(.borderless)
             .help("Open Desktop/Files from Mails")
+
+            if manager.isPaused {
+                Button("Resume", systemImage: "play.fill") {
+                    manager.resumeAll()
+                }
+                .help("Resume Downloads")
+            } else if manager.hasPendingTransfers {
+                Button("Stop", systemImage: "stop.fill") {
+                    manager.stopAll()
+                }
+                .help("Stop Downloads")
+            }
 
             Spacer()
 
@@ -55,12 +67,14 @@ struct DownloadsSidebarView: View {
                 manager.clearFinished()
             } label: {
                 Label("Clear", systemImage: "checkmark.circle")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 8.5, weight: .semibold))
             }
             .buttonStyle(.borderless)
-            .disabled(!manager.items.contains { $0.state == .ready })
-            .help("Clear finished downloads")
+            .disabled(manager.completedCount == 0 && !manager.items.contains { $0.state == .ready })
+            .help("Clear the done count and finished downloads")
         }
+        .font(.system(size: 8.5, weight: .semibold))
+        .controlSize(.mini)
         .padding(.horizontal, 9)
         .frame(height: 32)
         .background(.ultraThinMaterial)
@@ -72,26 +86,9 @@ struct DownloadsSidebarView: View {
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Downloads")
-                        .font(.system(size: 12.5, weight: .bold))
-                    Text(summary)
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Text("Downloads")
+                    .font(.system(size: 12.5, weight: .bold))
                 Spacer()
-                if manager.isPaused {
-                    Button("Resume", systemImage: "play.fill") {
-                        manager.resumeAll()
-                    }
-                    .help("Resume Downloads")
-                } else if manager.hasPendingTransfers {
-                    Button("Stop", systemImage: "stop.fill") {
-                        manager.stopAll()
-                    }
-                    .help("Stop Downloads")
-                }
                 Button(action: onClose) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 14))
@@ -100,6 +97,12 @@ struct DownloadsSidebarView: View {
                 .buttonStyle(.plain)
                 .help("Close Downloads")
             }
+
+            Text(summary)
+                .font(.system(size: 8.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             if manager.failedCount > 0 {
                 HStack(spacing: 7) {
@@ -111,6 +114,8 @@ struct DownloadsSidebarView: View {
                     }
                     Spacer()
                 }
+                .font(.system(size: 8.5, weight: .semibold))
+                .controlSize(.mini)
             }
         }
         .padding(.horizontal, 10)
@@ -119,14 +124,14 @@ struct DownloadsSidebarView: View {
     }
 
     private var summary: String {
-        if manager.activeCount > 0 || manager.queuedCount > 0 || manager.deferredCount > 0 {
-            var parts = ["\(manager.activeCount) active", "\(manager.queuedCount) queued"]
-            if manager.deferredCount > 0 { parts.append("\(manager.deferredCount) deferred") }
-            if manager.failedCount > 0 { parts.append("\(manager.failedCount) failed") }
-            return parts.joined(separator: " · ")
-        }
-        let completed = manager.items.filter { $0.state == .ready }.count
-        return completed == 1 ? "1 completed download" : "\(completed) completed downloads"
+        var parts = [
+            "\(manager.activeCount) active",
+            "\(manager.queuedCount) queued",
+            "\(manager.completedCount) done"
+        ]
+        if manager.deferredCount > 0 { parts.append("\(manager.deferredCount) deferred") }
+        if manager.failedCount > 0 { parts.append("\(manager.failedCount) failed") }
+        return parts.joined(separator: " · ")
     }
 
     private var activeItems: [AttachmentTransferRecord] {
@@ -201,9 +206,14 @@ struct DownloadsSidebarView: View {
         case .available:
             return "Ready to download"
         case .queued:
-            return "Queued"
+            return record.errorMessage ?? "Queued"
         case .downloading:
-            return "Downloading…"
+            switch record.activeRoute {
+            case .direct: return "Downloading directly…"
+            case .appleMail: return "Downloading through Mail…"
+            case .local: return "Preparing locally…"
+            case .none: return "Downloading…"
+            }
         case .deferred:
             return record.errorMessage ?? "Retrying automatically"
         case .ready:
