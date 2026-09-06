@@ -12,16 +12,25 @@ struct DownloadsSidebarView: View {
             if manager.items.isEmpty {
                 emptyState
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(manager.items) { record in
+                VStack(spacing: 0) {
+                    if !activeItems.isEmpty {
+                        ForEach(activeItems) { record in
                             downloadRow(record)
                             Divider().padding(.leading, 42)
                         }
+                        .background(Color.accentColor.opacity(0.06))
                     }
-                    .padding(.vertical, 4)
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(waitingItems) { record in
+                                downloadRow(record)
+                                Divider().padding(.leading, 42)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .background(Color(nsColor: .textBackgroundColor))
                 }
-                .background(Color(nsColor: .textBackgroundColor))
             }
             Divider()
             footer
@@ -58,26 +67,51 @@ struct DownloadsSidebarView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Downloads")
-                    .font(.system(size: 12.5, weight: .bold))
-                Text(summary)
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Downloads")
+                        .font(.system(size: 12.5, weight: .bold))
+                    Text(summary)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if manager.isPaused {
+                    Button("Resume", systemImage: "play.fill") {
+                        manager.resumeAll()
+                    }
+                    .help("Resume Downloads")
+                } else if manager.hasPendingTransfers {
+                    Button("Stop", systemImage: "stop.fill") {
+                        manager.stopAll()
+                    }
+                    .help("Stop Downloads")
+                }
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close Downloads")
             }
-            Spacer()
-            Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+
+            if manager.failedCount > 0 {
+                HStack(spacing: 7) {
+                    Button("Retry Failed", systemImage: "arrow.clockwise") {
+                        manager.retryAllFailed()
+                    }
+                    Button("Hide Failed", systemImage: "eye.slash") {
+                        manager.hideFailed()
+                    }
+                    Spacer()
+                }
             }
-            .buttonStyle(.plain)
-            .help("Close Downloads")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -85,11 +119,22 @@ struct DownloadsSidebarView: View {
     }
 
     private var summary: String {
-        if manager.activeCount > 0 || manager.queuedCount > 0 {
-            return "\(manager.activeCount) active · \(manager.queuedCount) queued"
+        if manager.activeCount > 0 || manager.queuedCount > 0 || manager.deferredCount > 0 {
+            var parts = ["\(manager.activeCount) active", "\(manager.queuedCount) queued"]
+            if manager.deferredCount > 0 { parts.append("\(manager.deferredCount) deferred") }
+            if manager.failedCount > 0 { parts.append("\(manager.failedCount) failed") }
+            return parts.joined(separator: " · ")
         }
         let completed = manager.items.filter { $0.state == .ready }.count
         return completed == 1 ? "1 completed download" : "\(completed) completed downloads"
+    }
+
+    private var activeItems: [AttachmentTransferRecord] {
+        manager.items.filter { $0.state == .downloading }
+    }
+
+    private var waitingItems: [AttachmentTransferRecord] {
+        manager.items.filter { $0.state != .downloading }
     }
 
     private var emptyState: some View {
@@ -159,6 +204,8 @@ struct DownloadsSidebarView: View {
             return "Queued"
         case .downloading:
             return "Downloading…"
+        case .deferred:
+            return record.errorMessage ?? "Retrying automatically"
         case .ready:
             return record.exportedURL == nil
                 ? "Available offline"
@@ -180,14 +227,14 @@ struct AttachmentDownloadIndicator: View {
             Circle()
                 .trim(from: 0, to: ringAmount)
                 .stroke(
-                    state == .failed ? Color.red : Color.accentColor,
+                    indicatorColor,
                     style: StrokeStyle(lineWidth: 3, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
 
             Image(systemName: symbolName)
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(state == .failed ? Color.red : Color.accentColor)
+                .foregroundStyle(indicatorColor)
         }
         .onAppear(perform: startAnimation)
         .onChange(of: state) { _ in startAnimation() }
@@ -199,6 +246,7 @@ struct AttachmentDownloadIndicator: View {
         case .available: return 1
         case .queued: return 0.22
         case .downloading: return growth
+        case .deferred: return 0.45
         case .ready: return 1
         case .failed: return 0.82
         }
@@ -208,6 +256,7 @@ struct AttachmentDownloadIndicator: View {
         switch state {
         case .available: return "arrow.down"
         case .queued, .downloading: return "arrow.down"
+        case .deferred: return "clock.arrow.circlepath"
         case .ready: return "checkmark"
         case .failed: return "exclamationmark"
         }
@@ -218,8 +267,17 @@ struct AttachmentDownloadIndicator: View {
         case .available: return "Download available"
         case .queued: return "Download queued"
         case .downloading: return "Downloading"
+        case .deferred: return "Download deferred for automatic retry"
         case .ready: return "Download ready"
         case .failed: return "Download failed"
+        }
+    }
+
+    private var indicatorColor: Color {
+        switch state {
+        case .failed: return .red
+        case .deferred: return .orange
+        default: return .accentColor
         }
     }
 

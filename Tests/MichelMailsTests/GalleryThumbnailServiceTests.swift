@@ -97,6 +97,10 @@ func desktopDuplicateDetection() throws {
     let firstSave = try DesktopFileSaver.save([item], to: desktopDirectory)
     #expect(firstSave.savedURLs.count == 1)
     #expect(firstSave.duplicateCount == 0)
+    let savedTags = try firstSave.savedURLs[0]
+        .resourceValues(forKeys: [.tagNamesKey])
+        .tagNames ?? []
+    #expect(savedTags.contains("From Email"))
 
     let secondSave = try DesktopFileSaver.save([item], to: desktopDirectory)
     #expect(secondSave.savedURLs.isEmpty)

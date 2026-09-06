@@ -41,6 +41,7 @@ enum DesktopFileSaver {
                 expectedSize: sourceSize,
                 expectedDate: referenceDate
             ) {
+                try FinderTagger.addFromEmailTag(to: proposedURL)
                 duplicateCount += 1
                 continue
             }
@@ -53,6 +54,7 @@ enum DesktopFileSaver {
                     ofItemAtPath: destination.path
                 )
             }
+            try FinderTagger.addFromEmailTag(to: destination)
             savedURLs.append(destination)
         }
 
@@ -111,5 +113,18 @@ enum DesktopFileSaver {
             if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
             index += 1
         }
+    }
+}
+
+enum FinderTagger {
+    static let fromEmail = "From Email"
+
+    static func addFromEmailTag(to fileURL: URL) throws {
+        let existingTags = try fileURL.resourceValues(forKeys: [.tagNamesKey]).tagNames ?? []
+        guard !existingTags.contains(fromEmail) else { return }
+        try (fileURL as NSURL).setResourceValue(
+            existingTags + [fromEmail],
+            forKey: .tagNamesKey
+        )
     }
 }

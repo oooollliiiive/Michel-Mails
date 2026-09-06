@@ -42,8 +42,11 @@ Le MVP comprend :
 - des vignettes non bloquantes pour les formats d’image reconnus par macOS, la première page des PDF et les vidéos, avec le nom et la date du fichier ;
 - le glisser-déposer natif d’un ou plusieurs originaux vers le Finder, Photoshop ou une autre application, sans déplacer la fenêtre de Michel Mails ;
 - le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
+- le tag Finder automatique `From Email` sur chaque fichier enregistré, y compris lorsqu’une copie identique existe déjà dans le dossier choisi ;
 - une préparation automatique des vignettes : les fichiers locaux sont traités en parallèle et les pièces jointes manquantes sont demandées à Mail sans clic ;
 - des récupérations auprès de Mail exécutées une par une afin de préserver sa réactivité, toujours priorisées du fichier le plus récent au plus ancien ;
+- un watchdog court sur Mail : un téléchargement lent est repoussé derrière les nouvelles demandes, retenté automatiquement une fois avec un délai plus long, puis signalé sans jamais bloquer la suite de la file ;
+- le téléchargement réellement actif épinglé en haut de la colonne, avec `Stop`/`Resume`, `Retry Failed` et `Hide Failed` pour piloter clairement une longue file ;
 - des vignettes persistantes conservées indépendamment des originaux et réutilisées aux lancements suivants ;
 - un cache mémoire des vignettes déjà affichées, pour éviter le bref retour d’un indicateur de téléchargement pendant le défilement ;
 - un cache temporaire des originaux conservé pendant 7 jours après leur dernière utilisation, afin de ne pas redemander plusieurs fois le même fichier à Mail ;

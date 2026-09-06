@@ -404,12 +404,17 @@ struct MailImageGalleryView: View {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .onTapGesture {
-            toggle(item)
-        }
-        .onTapGesture(count: 2) {
-            openFile(item)
-        }
+        .gesture(
+            ExclusiveGesture(TapGesture(count: 2), TapGesture())
+                .onEnded { result in
+                    switch result {
+                    case .first:
+                        openFile(item)
+                    case .second:
+                        toggle(item)
+                    }
+                }
+        )
         .simultaneousGesture(
             DragGesture(minimumDistance: 7, coordinateSpace: .local)
                 .onChanged { _ in beginNativeDrag(item) }

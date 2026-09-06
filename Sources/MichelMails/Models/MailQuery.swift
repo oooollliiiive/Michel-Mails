@@ -143,6 +143,7 @@ enum AttachmentTransferState: String, Equatable, Sendable {
     case available
     case queued
     case downloading
+    case deferred
     case ready
     case failed
 }

@@ -58,7 +58,8 @@ enum AttachmentMaterializer {
     static func materialize(
         _ candidate: IndexedMailAttachmentCandidate,
         to destination: URL,
-        allowMailDownload: Bool
+        allowMailDownload: Bool,
+        mailDownloadTimeout: TimeInterval = 12
     ) async throws {
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.createDirectory(
@@ -85,7 +86,7 @@ enum AttachmentMaterializer {
                 candidate.attachmentName,
                 destination.path
             ],
-            timeout: 75
+            timeout: mailDownloadTimeout
         )
         let result = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard result == "1" else {
