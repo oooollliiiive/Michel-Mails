@@ -10,13 +10,16 @@ final class PromptPanel: NSPanel {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let promptWidth: CGFloat = 720
     private static let promptBaseHeight: CGFloat = 262
+    private static let downloadsSidebarWidth: CGFloat = 238
+    private static let expandedMainWidth: CGFloat = 1_020
+    private static let expandedContentHeight: CGFloat = 950
     private static let historyHeaderHeight: CGFloat = 26
     private static let historyRowHeight: CGFloat = 34
     private static let historySpacing: CGFloat = 12
 
     private var panel: PromptPanel?
-    private var downloadsWindow: NSWindow?
     private var statusItem: NSStatusItem?
+    private var isAdjustingPanelFrame = false
     private let indexController: MailIndexController
     private let downloadManager: AttachmentDownloadManager
     private let viewModel: SearchViewModel
@@ -41,11 +44,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         viewModel.onHistorySuggestionsChanged = { [weak self] count in
             self?.resizePromptPanel(forHistoryCount: count)
         }
-        viewModel.onShowDownloads = { [weak self] in
-            self?.showDownloads()
+        viewModel.onDownloadsVisibilityChanged = { [weak self] _ in
+            self?.resizeForCurrentContent()
         }
         downloadManager.onPresentDownloads = { [weak self] in
-            self?.showDownloads()
+            self?.viewModel.showDownloads()
         }
         configureStatusItem()
         showPrompt()
@@ -82,31 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showDownloads() {
-        let window: NSWindow
-        if let downloadsWindow {
-            window = downloadsWindow
-        } else {
-            window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "Downloads"
-            window.minSize = NSSize(width: 620, height: 420)
-            window.isReleasedWhenClosed = false
-            window.level = .normal
-            window.contentView = NSHostingView(
-                rootView: DownloadsView(manager: downloadManager)
-            )
-            if !window.setFrameUsingName("MichelMailsDownloadsWindow") {
-                window.center()
-            }
-            window.setFrameAutosaveName("MichelMailsDownloadsWindow")
-            downloadsWindow = window
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        showPrompt()
+        viewModel.showDownloads()
     }
 
     private func makePanel() -> PromptPanel {
@@ -155,12 +135,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             )
         )
 
-        if !panel.setFrameUsingName("MichelMailsPromptWindow") {
-            panel.center()
-        }
+        restorePromptPosition(panel)
         resizePromptPanel(panel, forHistoryCount: 0, animated: false)
-        panel.setFrameAutosaveName("MichelMailsPromptWindow")
         return panel
+    }
+
+    private func resizeForCurrentContent() {
+        if viewModel.displayedGallery != nil || viewModel.displayedResults != nil {
+            setContentExpanded(true)
+        } else {
+            let visibleHistoryCount = viewModel.historyIsVisible
+                ? viewModel.historySuggestions.count
+                : 0
+            resizePromptPanel(forHistoryCount: visibleHistoryCount)
+        }
     }
 
     private func resizePromptPanel(forHistoryCount count: Int) {
@@ -171,10 +159,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func setContentExpanded(_ isExpanded: Bool, animated: Bool = true) {
         guard let panel else { return }
+        let sidebarWidth = viewModel.downloadsSidebarIsVisible
+            ? Self.downloadsSidebarWidth
+            : 0
         if !isExpanded {
-            panel.contentMinSize = NSSize(width: Self.promptWidth, height: Self.promptBaseHeight)
+            let compactWidth = Self.promptWidth + sidebarWidth
+            panel.contentMinSize = NSSize(width: compactWidth, height: Self.promptBaseHeight)
             panel.contentMaxSize = NSSize(
-                width: Self.promptWidth,
+                width: compactWidth,
                 height: Self.promptBaseHeight
                     + Self.historySpacing
                     + Self.historyHeaderHeight
@@ -188,9 +180,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-        let targetContentWidth = min(1_020, (visibleFrame?.width ?? 1_020) * 0.92)
-        let targetContentHeight = min(940, (visibleFrame?.height ?? 940) * 0.96)
-        panel.contentMinSize = NSSize(width: 720, height: min(820, targetContentHeight))
+        let availableWidth = max(
+            Self.promptWidth + sidebarWidth,
+            (visibleFrame?.width ?? 1_320) - 24
+        )
+        let mainWidth = min(Self.expandedMainWidth, availableWidth - sidebarWidth)
+        let targetContentWidth = mainWidth + sidebarWidth
+        let preferredHeight = min(1_020, (visibleFrame?.height ?? 1_020) - 12)
+        let targetContentHeight = max(Self.expandedContentHeight, preferredHeight)
+        panel.contentMinSize = NSSize(
+            width: Self.promptWidth + sidebarWidth,
+            height: Self.expandedContentHeight
+        )
         panel.contentMaxSize = NSSize(width: 10_000, height: 10_000)
 
         let targetFrameSize = panel.frameRect(
@@ -208,9 +209,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
         if let visibleFrame {
             targetFrame.origin.x = min(max(targetFrame.minX, visibleFrame.minX), visibleFrame.maxX - targetFrame.width)
-            targetFrame.origin.y = max(targetFrame.minY, visibleFrame.minY)
+            if targetFrame.height <= visibleFrame.height {
+                targetFrame.origin.y = min(
+                    max(targetFrame.minY, visibleFrame.minY),
+                    visibleFrame.maxY - targetFrame.height
+                )
+            } else {
+                targetFrame.origin.y = visibleFrame.minY
+            }
         }
-        panel.setFrame(targetFrame, display: true, animate: animated)
+        setPanelFrame(panel, frame: targetFrame, animated: animated)
     }
 
     private func resizePromptPanel(
@@ -225,7 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 + Self.historyHeaderHeight
                 + (Self.historyRowHeight * CGFloat(visibleCount))
         let targetContentSize = NSSize(
-            width: Self.promptWidth,
+            width: Self.promptWidth + (viewModel.downloadsSidebarIsVisible
+                ? Self.downloadsSidebarWidth
+                : 0),
             height: Self.promptBaseHeight + historyHeight
         )
         let targetFrameSize = panel.frameRect(
@@ -242,7 +252,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let visibleFrame = panel.screen?.visibleFrame {
             targetFrame.origin.y = max(targetFrame.minY, visibleFrame.minY)
         }
-        panel.setFrame(targetFrame, display: true, animate: animated)
+        setPanelFrame(panel, frame: targetFrame, animated: animated)
+    }
+
+    private func setPanelFrame(_ panel: NSPanel, frame: NSRect, animated: Bool) {
+        isAdjustingPanelFrame = true
+        panel.setFrame(frame, display: true, animate: animated)
+        isAdjustingPanelFrame = false
+    }
+
+    private func restorePromptPosition(_ panel: NSPanel) {
+        let defaults = UserDefaults.standard
+        var savedX: CGFloat?
+        var savedTop: CGFloat?
+        if defaults.object(forKey: "MichelMailsPromptX") != nil,
+           defaults.object(forKey: "MichelMailsPromptTop") != nil {
+            savedX = defaults.double(forKey: "MichelMailsPromptX")
+            savedTop = defaults.double(forKey: "MichelMailsPromptTop")
+        } else if let legacyFrame = defaults.string(
+            forKey: "NSWindow Frame MichelMailsPromptWindow"
+        ) {
+            let numbers = legacyFrame
+                .split(whereSeparator: { $0 == " " || $0 == "\t" })
+                .prefix(4)
+                .compactMap { Double($0) }
+            if numbers.count == 4 {
+                savedX = numbers[0]
+                savedTop = numbers[1] + numbers[3]
+            }
+        }
+        guard let savedX, let savedTop else {
+            panel.center()
+            return
+        }
+        var frame = panel.frame
+        frame.origin.x = savedX
+        frame.origin.y = savedTop - frame.height
+        if let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            frame.origin.x = min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, visibleFrame.minY), visibleFrame.maxY - frame.height)
+        }
+        panel.setFrame(frame, display: false)
+    }
+
+    private func rememberPromptPosition() {
+        guard let panel else { return }
+        let defaults = UserDefaults.standard
+        defaults.set(panel.frame.minX, forKey: "MichelMailsPromptX")
+        defaults.set(panel.frame.maxY, forKey: "MichelMailsPromptTop")
     }
 
     private func configureStatusItem() {
@@ -263,9 +320,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === panel else { return }
+        rememberPromptPosition()
         viewModel.closeDisplayedContent()
         setContentExpanded(false, animated: false)
-        panel?.saveFrame(usingName: "MichelMailsPromptWindow")
         NSApp.terminate(nil)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        guard !isAdjustingPanelFrame,
+              let window = notification.object as? NSWindow,
+              window === panel else { return }
+        rememberPromptPosition()
     }
 }

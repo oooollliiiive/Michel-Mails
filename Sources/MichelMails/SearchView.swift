@@ -11,7 +11,8 @@ struct SearchView: View {
     @State private var quickFilterTask: Task<Void, Never>?
 
     var body: some View {
-        VStack(spacing: 0) {
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
             VStack(spacing: 12) {
             quickImageControls
 
@@ -77,7 +78,7 @@ struct SearchView: View {
                 .buttonStyle(.plain)
                 .help("Settings")
 
-                Button(action: viewModel.showDownloads) {
+                Button(action: viewModel.toggleDownloads) {
                     ZStack(alignment: .topTrailing) {
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: 16, weight: .medium))
@@ -91,7 +92,7 @@ struct SearchView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .help("Show Downloads")
+                .help(viewModel.downloadsSidebarIsVisible ? "Hide Downloads" : "Show Downloads")
             }
 
             if viewModel.historyIsVisible {
@@ -242,9 +243,20 @@ struct SearchView: View {
                 .id(results.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            }
+            .frame(minWidth: 660)
+            .background(.ultraThinMaterial)
+
+            if viewModel.downloadsSidebarIsVisible {
+                Divider()
+                DownloadsSidebarView(
+                    manager: downloadManager,
+                    onClose: viewModel.hideDownloads
+                )
+                .frame(width: 238)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
-        .frame(minWidth: 660)
-        .background(.ultraThinMaterial)
         .onAppear {
             viewModel.refreshImageCorrespondents()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {

@@ -39,12 +39,12 @@ Le MVP comprend :
 - des vignettes non bloquantes pour les formats d’image reconnus par macOS, la première page des PDF et les vidéos, avec le nom et la date du fichier ;
 - le glisser-déposer des fichiers vers le Finder ou une autre application ;
 - le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
-- une préparation parallèle des vignettes déjà disponibles localement, sans jamais demander automatiquement un fichier distant à Mail ;
-- des téléchargements distants explicites exécutés un par un afin de préserver la réactivité de Mail, toujours priorisés du fichier le plus récent au plus ancien ;
+- une préparation automatique des vignettes : les fichiers locaux sont traités en parallèle et les pièces jointes manquantes sont demandées à Mail sans clic ;
+- des récupérations auprès de Mail exécutées une par une afin de préserver sa réactivité, toujours priorisées du fichier le plus récent au plus ancien ;
 - des vignettes persistantes conservées indépendamment des originaux et réutilisées aux lancements suivants ;
-- un cache temporaire des originaux conservé pendant 30 jours après leur dernière utilisation, afin de ne pas redemander plusieurs fois le même fichier à Mail ;
+- un cache temporaire des originaux conservé pendant 7 jours après leur dernière utilisation, afin de ne pas redemander plusieurs fois le même fichier à Mail ;
 - le refus systématique des fichiers vides ou incomplets avant toute copie ;
-- une fenêtre `Downloads` ouverte automatiquement avant tout téléchargement demandé, également consultable à la demande, et une destination commune `Desktop/Files from Mails`, directement visible par Michel OS ;
+- une colonne `Downloads` compacte intégrée à droite de la fenêtre principale, ouverte automatiquement, refermable et consultable à la demande, ainsi qu’une destination commune `Desktop/Files from Mails`, directement visible par Michel OS ;
 - une grille horizontale qui répond aussi à la molette verticale d’une souris classique ;
 - une confirmation avant de copier des images dans un dossier ;
 - le stockage local de la clé API dans un fichier privé accessible uniquement à l’utilisateur ;

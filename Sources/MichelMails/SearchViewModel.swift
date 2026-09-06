@@ -18,9 +18,10 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var showParasiteImages = false
     @Published private(set) var showJunkImages = false
     @Published private(set) var imageCorrespondents: [String] = []
+    @Published private(set) var downloadsSidebarIsVisible = false
     var onContentVisibilityChanged: ((Bool) -> Void)?
     var onHistorySuggestionsChanged: ((Int) -> Void)?
-    var onShowDownloads: (() -> Void)?
+    var onDownloadsVisibilityChanged: ((Bool) -> Void)?
 
     private let interpreter = AIQueryInterpreter()
     private let mailService = MailService()
@@ -267,7 +268,19 @@ final class SearchViewModel: ObservableObject {
     }
 
     func showDownloads() {
-        onShowDownloads?()
+        guard !downloadsSidebarIsVisible else { return }
+        downloadsSidebarIsVisible = true
+        onDownloadsVisibilityChanged?(true)
+    }
+
+    func hideDownloads() {
+        guard downloadsSidebarIsVisible else { return }
+        downloadsSidebarIsVisible = false
+        onDownloadsVisibilityChanged?(false)
+    }
+
+    func toggleDownloads() {
+        downloadsSidebarIsVisible ? hideDownloads() : showDownloads()
     }
 
     func downloadAttachments(_ message: MailMessageItem) {

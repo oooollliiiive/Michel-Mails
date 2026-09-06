@@ -9,13 +9,16 @@ final class AttachmentDownloadManager: ObservableObject {
     var onPresentDownloads: (() -> Void)?
 
     private let maximumConcurrentTransfers = 4
+    private let startsTransfersAutomatically: Bool
     private var queue: [String] = []
     private var activeKeys: Set<String> = []
     private var activeMailKeys: Set<String> = []
     private var highPriorityKeys: Set<String> = []
     private var mailCooldown = false
+    private var presentedAutomaticDownloads = false
 
-    init() {
+    init(startsTransfersAutomatically: Bool = true) {
+        self.startsTransfersAutomatically = startsTransfersAutomatically
         Task.detached(priority: .utility) {
             try? PersistentAttachmentStore.cleanupExpired()
         }
@@ -54,6 +57,7 @@ final class AttachmentDownloadManager: ObservableObject {
     }
 
     func prepareThumbnails(_ candidates: [IndexedMailAttachmentCandidate]) {
+        presentedAutomaticDownloads = false
         let orderedCandidates = candidates.sorted {
             ($0.receivedAt ?? .distantPast) > ($1.receivedAt ?? .distantPast)
         }
@@ -61,6 +65,7 @@ final class AttachmentDownloadManager: ObservableObject {
         var updatedKeys = orderedKeys
         var knownKeys = Set(updatedKeys)
         var queuedKeys = Set(queue)
+        var queuedRemoteDownload = false
         for candidate in orderedCandidates {
             let key = candidate.stableKey
             let existingThumbnail = PersistentThumbnailStore.existingThumbnailURL(for: candidate)
@@ -81,6 +86,8 @@ final class AttachmentDownloadManager: ObservableObject {
             record.candidate = candidate
             if let existingThumbnail { record.thumbnailURL = existingThumbnail }
             record.needsThumbnail = record.thumbnailURL == nil
+            record.automaticallyDownloadIfNeeded = record.needsThumbnail
+            record.shouldCacheOriginal = record.shouldCacheOriginal || record.needsThumbnail
             if record.needsThumbnail,
                hasLocallyAvailableSource,
                !activeKeys.contains(key),
@@ -91,8 +98,12 @@ final class AttachmentDownloadManager: ObservableObject {
             } else if record.needsThumbnail,
                       !hasLocallyAvailableSource,
                       !activeKeys.contains(key),
-                      !record.allowsMailDownload {
-                record.state = .available
+                      record.state != .failed {
+                record.state = .queued
+                record.allowsMailDownload = true
+                record.isVisibleInDownloads = true
+                if queuedKeys.insert(key).inserted { queue.append(key) }
+                queuedRemoteDownload = true
             } else if !record.needsThumbnail && !record.needsExport {
                 record.state = .ready
             }
@@ -101,6 +112,7 @@ final class AttachmentDownloadManager: ObservableObject {
         }
         records = updatedRecords
         orderedKeys = updatedKeys
+        if queuedRemoteDownload { presentAutomaticDownloadsIfNeeded() }
         pumpQueue()
     }
 
@@ -223,6 +235,7 @@ final class AttachmentDownloadManager: ObservableObject {
         record.needsExport = record.needsExport || needsExport
         if let exportDirectoryURL { record.exportDirectoryURL = exportDirectoryURL }
         record.allowsMailDownload = record.allowsMailDownload || allowsMailDownload
+        record.shouldCacheOriginal = true
         record.isVisibleInDownloads = record.isVisibleInDownloads || visibleInDownloads
         record.openWhenReady = record.openWhenReady || openWhenReady
         record.errorMessage = nil
@@ -245,6 +258,7 @@ final class AttachmentDownloadManager: ObservableObject {
     }
 
     private func pumpQueue() {
+        guard startsTransfersAutomatically else { return }
         while activeKeys.count < maximumConcurrentTransfers, !queue.isEmpty {
             let eligibleIndices = queue.indices.filter { index in
                 guard let record = records[queue[index]] else { return false }
@@ -321,7 +335,7 @@ final class AttachmentDownloadManager: ObservableObject {
         }
 
         var durableURL = materializedURL
-        if record.allowsMailDownload || record.isVisibleInDownloads {
+        if record.shouldCacheOriginal || record.allowsMailDownload || record.isVisibleInDownloads {
             do {
                 durableURL = try await Task.detached(priority: .utility) {
                     try PersistentAttachmentStore.store(
@@ -397,12 +411,16 @@ final class AttachmentDownloadManager: ObservableObject {
     ) {
         guard var record = records[key] else { return }
         releaseActiveTransfer(key)
-        if !attemptAllowedMailDownload, record.allowsMailDownload {
+        if !attemptAllowedMailDownload,
+           (record.allowsMailDownload || record.automaticallyDownloadIfNeeded) {
             record.state = .queued
+            record.allowsMailDownload = true
+            record.isVisibleInDownloads = true
             records[key] = record
             queue.removeAll { $0 == key }
             highPriorityKeys.insert(key)
             queue.insert(key, at: 0)
+            presentAutomaticDownloadsIfNeeded()
             pumpQueue()
             return
         }
@@ -432,6 +450,12 @@ final class AttachmentDownloadManager: ObservableObject {
             self.mailCooldown = false
             self.pumpQueue()
         }
+    }
+
+    private func presentAutomaticDownloadsIfNeeded() {
+        guard !presentedAutomaticDownloads else { return }
+        presentedAutomaticDownloads = true
+        onPresentDownloads?()
     }
 
     private static func destinationDirectory() throws -> URL {

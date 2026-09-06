@@ -6,6 +6,7 @@ enum AttachmentMaterializerError: LocalizedError {
     case unavailable
     case incomplete
     case mailDidNotRespond
+    case mailDownloadFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +16,10 @@ enum AttachmentMaterializerError: LocalizedError {
             return "Mail returned an incomplete attachment."
         case .mailDidNotRespond:
             return "Mail did not finish downloading the attachment."
+        case .mailDownloadFailed(let detail):
+            return detail.isEmpty
+                ? "Mail could not download the attachment."
+                : "Mail could not download the attachment: \(detail)"
         }
     }
 }
@@ -66,8 +71,14 @@ enum AttachmentMaterializer {
             ],
             timeout: 75
         )
-        guard output.trimmingCharacters(in: .whitespacesAndNewlines) == "1" else {
+        let result = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result == "1" else {
             try? FileManager.default.removeItem(at: destination)
+            if result.hasPrefix("ERROR|") {
+                throw AttachmentMaterializerError.mailDownloadFailed(
+                    String(result.dropFirst("ERROR|".count))
+                )
+            }
             throw AttachmentMaterializerError.mailDidNotRespond
         }
         guard isCompleteFile(at: destination, candidate: candidate) else {
@@ -223,7 +234,8 @@ enum AttachmentMaterializer {
                     repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
                         try
                             if (name of aMailbox as text) is targetMailboxName then
-                                if my saveMatchingAttachment(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath) then return "1"
+                                set attemptResult to my saveMatchingAttachment(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
+                                if attemptResult is not "0" then return attemptResult
                             end if
                         end try
                     end repeat
@@ -233,7 +245,8 @@ enum AttachmentMaterializer {
             -- The message may have moved after indexing.
             repeat with anAccount in accountCandidates
                 repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
-                    if my saveMatchingAttachment(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath) then return "1"
+                    set attemptResult to my saveMatchingAttachment(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
+                    if attemptResult is not "0" then return attemptResult
                 end repeat
             end repeat
         end tell
@@ -274,10 +287,12 @@ enum AttachmentMaterializer {
                             return "1"
                         end if
                     end repeat
+                on error errorMessage number errorNumber
+                    return "ERROR|" & errorNumber & " · " & errorMessage
                 end try
             end repeat
         end tell
-        return false
+        return "0"
     end saveMatchingAttachment
 
     on flattenedMailboxes(aContainer)

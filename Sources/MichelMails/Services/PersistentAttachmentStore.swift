@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 enum PersistentAttachmentStore {
-    static let retentionInterval: TimeInterval = 30 * 24 * 60 * 60
+    static let retentionInterval: TimeInterval = 7 * 24 * 60 * 60
 
     static func existingOriginalURL(
         for candidate: IndexedMailAttachmentCandidate,

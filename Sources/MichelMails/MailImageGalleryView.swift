@@ -17,10 +17,10 @@ struct MailImageGalleryView: View {
     @State private var transientMessage: String?
     @State private var transientMessageTask: Task<Void, Never>?
 
-    private let cardWidth: CGFloat = 184
-    private let cardHeight: CGFloat = 156
-    private let gridSpacing: CGFloat = 8
-    private let gridPadding: CGFloat = 12
+    private let cardWidth: CGFloat = 200
+    private let cardHeight: CGFloat = 174
+    private let gridSpacing: CGFloat = 5
+    private let gridPadding: CGFloat = 6
 
     private var selectedItems: [MailImageItem] {
         gallery.items.filter { selectedIDs.contains($0.id) }
@@ -53,7 +53,7 @@ struct MailImageGalleryView: View {
     private func galleryRows(for viewportHeight: CGFloat) -> [GridItem] {
         let usableHeight = max(cardHeight, viewportHeight - (gridPadding * 2))
         let rowCount = max(
-            1,
+            3,
             Int((usableHeight + gridSpacing) / (cardHeight + gridSpacing))
         )
         return Array(
@@ -306,9 +306,9 @@ struct MailImageGalleryView: View {
             ZStack {
                 GalleryThumbnail(item: item, downloadManager: downloadManager)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 156)
+                    .frame(height: cardHeight)
                     .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 VStack(spacing: 0) {
                     ZStack(alignment: .topTrailing) {
@@ -319,10 +319,9 @@ struct MailImageGalleryView: View {
                             .minimumScaleFactor(0.62)
                             .allowsTightening(true)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, selected ? 29 : 7)
+                            .padding(.horizontal, selected ? 27 : 5)
                             .frame(maxWidth: .infinity)
-                            .frame(height: 25, alignment: .bottom)
-                            .padding(.bottom, 3)
+                            .frame(height: 18, alignment: .center)
                             .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
 
                         if selected {
@@ -330,11 +329,10 @@ struct MailImageGalleryView: View {
                                 .font(.system(size: 19, weight: .semibold))
                                 .symbolRenderingMode(.palette)
                                 .foregroundStyle(.white, Color.accentColor)
-                                .padding(4)
+                                .padding(2)
                         }
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.top, 10)
+                    .padding(.horizontal, 3)
 
                     Spacer()
 
@@ -346,19 +344,18 @@ struct MailImageGalleryView: View {
                     }
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .padding(.horizontal, 7)
+                    .padding(.horizontal, 5)
                     .frame(maxWidth: .infinity, minHeight: 30, alignment: .top)
-                    .padding(.top, 3)
+                    .padding(.top, 2)
                     .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 6))
-                    .padding(.horizontal, 7)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 3)
                 }
             }
         }
         .frame(width: cardWidth, height: cardHeight)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(selected ? Color.accentColor.opacity(0.08) : Color(nsColor: .controlBackgroundColor))
+                .fill(selected ? Color.accentColor.opacity(0.08) : Color.clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -642,10 +639,16 @@ private struct GalleryThumbnail: View {
         Group {
             if let image {
                 ZStack {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(isFallback ? 24 : 5)
+                    if isFallback || (item.kind != .image && item.kind != .video) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .padding(isFallback ? 20 : 3)
+                    } else {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    }
 
                     if item.kind == .video, !isFallback {
                         Image(systemName: "play.circle.fill")

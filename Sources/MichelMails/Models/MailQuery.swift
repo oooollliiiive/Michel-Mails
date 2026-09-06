@@ -157,6 +157,8 @@ struct AttachmentTransferRecord: Identifiable, Equatable, Sendable {
     var needsThumbnail: Bool
     var needsExport: Bool
     var allowsMailDownload = false
+    var automaticallyDownloadIfNeeded = false
+    var shouldCacheOriginal = false
     var isVisibleInDownloads = false
     var openWhenReady = false
     var errorMessage: String?

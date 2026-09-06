@@ -30,6 +30,9 @@ func attachmentDownloadScriptCompiles() throws {
     var error: NSDictionary?
     #expect(script.compileAndReturnError(&error))
     #expect(error == nil)
+    #expect(AttachmentMaterializer.downloadScript.contains("set attemptResult to my saveMatchingAttachment"))
+    #expect(AttachmentMaterializer.downloadScript.contains("if attemptResult is not \"0\" then return attemptResult"))
+    #expect(!AttachmentMaterializer.downloadScript.contains("if my saveMatchingAttachment"))
 }
 
 @Test("French copy prompt extracts sender, images, all results, and destination")

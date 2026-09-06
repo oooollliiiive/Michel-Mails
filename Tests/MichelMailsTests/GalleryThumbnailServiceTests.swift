@@ -208,9 +208,9 @@ func persistentAttachmentThumbnail() async throws {
     #expect(try Data(contentsOf: materializedURL) == data)
 }
 
-@Test("Missing previews wait for the user without contacting Mail")
+@Test("Missing previews are queued automatically for Mail")
 @MainActor
-func missingPreviewDoesNotStartRemoteDownload() {
+func missingPreviewStartsRemoteDownload() {
     let candidate = IndexedMailAttachmentCandidate(
         messageIdentifier: "remote-message",
         localIdentifier: "900",
@@ -226,18 +226,19 @@ func missingPreviewDoesNotStartRemoteDownload() {
         sizeBytes: 12_000,
         kind: .image
     )
-    let manager = AttachmentDownloadManager()
+    let manager = AttachmentDownloadManager(startsTransfersAutomatically: false)
 
     manager.prepareThumbnails([candidate])
 
-    #expect(manager.record(for: candidate)?.state == .available)
-    #expect(manager.record(for: candidate)?.allowsMailDownload == false)
+    #expect(manager.record(for: candidate)?.state == .queued)
+    #expect(manager.record(for: candidate)?.allowsMailDownload == true)
+    #expect(manager.record(for: candidate)?.isVisibleInDownloads == true)
     #expect(manager.activeCount == 0)
-    #expect(manager.queuedCount == 0)
-    #expect(manager.items.isEmpty)
+    #expect(manager.queuedCount == 1)
+    #expect(manager.items.count == 1)
 }
 
-@Test("Original attachment cache expires files after thirty days")
+@Test("Original attachment cache expires files after seven days")
 func temporaryOriginalRetention() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
