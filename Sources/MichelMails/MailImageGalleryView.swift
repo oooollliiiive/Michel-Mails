@@ -14,6 +14,8 @@ struct MailImageGalleryView: View {
     @State private var selectionOrder: [UUID] = []
     @State private var selectionModeEnabled = false
     @State private var cardFrames: [UUID: CGRect] = [:]
+    @State private var selectionActionBarSize = CGSize(width: 420, height: 38)
+    @State private var nativeDragItemID: UUID?
     @State private var transientMessage: String?
     @State private var transientMessageTask: Task<Void, Never>?
     @State private var openingMailItemID: UUID?
@@ -90,11 +92,20 @@ struct MailImageGalleryView: View {
                     cardFrames = frames
                 }
                 .overlay {
-                    if !selectedIDs.isEmpty {
+                    if !selectedIDs.isEmpty || selectionModeEnabled {
+                        let target = selectionBarPosition(in: viewport.size)
                         selectionActionBar
-                            .position(selectionBarPosition(in: viewport.size))
+                            .position(target)
+                            .animation(
+                                .timingCurve(0.22, 0.78, 0.28, 1, duration: 0.24),
+                                value: target
+                            )
                             .transition(.scale(scale: 0.94).combined(with: .opacity))
                     }
+                }
+                .onPreferenceChange(SelectionActionBarSizePreferenceKey.self) { size in
+                    guard size.width > 0, size.height > 0 else { return }
+                    selectionActionBarSize = size
                 }
             }
             .background(Color(nsColor: .underPageBackgroundColor))
@@ -165,27 +176,6 @@ struct MailImageGalleryView: View {
                 .controlSize(.mini)
                 .help("Include images from Junk and Spam mailboxes.")
 
-            Button {
-                toggleSelectionMode()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: selectionModeEnabled ? "checkmark.circle.fill" : "checkmark.circle")
-                    Text("Select")
-                }
-                .font(.system(size: 10.5, weight: .bold))
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(selectionModeEnabled ? Color.accentColor : Color.secondary)
-            .help(selectionModeEnabled ? "Turn off multiple selection" : "Turn on multiple selection")
-
-            if selectionModeEnabled {
-                Button("Select All") {
-                    selectedIDs = Set(gallery.items.map(\.id))
-                    selectionOrder = gallery.items.map(\.id)
-                }
-                .disabled(gallery.items.isEmpty || selectedIDs.count == gallery.items.count)
-            }
-
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 18))
@@ -220,11 +210,11 @@ struct MailImageGalleryView: View {
     }
 
     private var selectionActionBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             Text(selectedIDs.count == 1 ? "1 file" : "\(selectedIDs.count) files")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(Color.accentColor)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 8)
                 .frame(height: 30)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
                 .overlay(
@@ -232,53 +222,96 @@ struct MailImageGalleryView: View {
                         .stroke(Color.accentColor.opacity(0.28), lineWidth: 1)
                 )
 
-            Button(action: saveSelectedToDesktop) {
-                Text("Save to directory From Mails")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .frame(height: 30)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7))
+            if selectedIDs.count == 1 {
+                Button {
+                    if let item = lastSelectedItem { openFile(item) }
+                } label: {
+                    selectionButtonLabel("Open")
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             if selectedIDs.count == 1 {
                 Button {
                     if let item = lastSelectedItem { openEmail(item) }
                 } label: {
-                    Text(openingMailItemID == lastSelectedItem?.id ? "Opening…" : "Open in Mail")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .frame(height: 30)
-                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7))
+                    selectionButtonLabel(
+                        openingMailItemID == lastSelectedItem?.id ? "Opening…" : "Open in Mail"
+                    )
                 }
                 .buttonStyle(.plain)
                 .disabled(openingMailItemID != nil)
             }
 
-            Button(action: unselectAll) {
-                Text("Unselect All")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 12)
-                    .frame(height: 30)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7)
-                            .stroke(Color.accentColor.opacity(0.34), lineWidth: 1)
-                    )
+            if !selectedIDs.isEmpty {
+                Button(action: saveSelectedToDesktop) {
+                    selectionButtonLabel("Save to directory From Mails")
+                }
+                .buttonStyle(.plain)
+            }
+
+            if selectionModeEnabled && selectedIDs.count < gallery.items.count {
+                Button(action: selectAll) {
+                    selectionButtonLabel("Select All", secondary: true)
+                }
+                .buttonStyle(.plain)
+                .disabled(gallery.items.isEmpty)
+            }
+
+            if selectionModeEnabled && !selectedIDs.isEmpty {
+                Button(action: unselectAll) {
+                    selectionButtonLabel("Unselect all", secondary: true)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button(action: toggleSelectionMode) {
+                selectionButtonLabel(
+                    selectionModeEnabled ? "Single selection" : "Select Files"
+                )
             }
             .buttonStyle(.plain)
         }
+        .padding(4)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11)
+                .stroke(Color.secondary.opacity(0.24), lineWidth: 1)
+        )
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
         .fixedSize()
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: SelectionActionBarSizePreferenceKey.self,
+                    value: geometry.size
+                )
+            }
+        }
         .zIndex(20)
     }
 
+    private func selectionButtonLabel(_ title: String, secondary: Bool = false) -> some View {
+        Text(title)
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(secondary ? Color.accentColor : Color.white)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background(
+                secondary ? Color(nsColor: .controlBackgroundColor) : Color.accentColor,
+                in: RoundedRectangle(cornerRadius: 7)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(Color.accentColor.opacity(0.34), lineWidth: 1)
+            )
+    }
+
     private func selectionBarPosition(in viewportSize: CGSize) -> CGPoint {
-        let halfBarWidth: CGFloat = selectedIDs.count == 1 ? 260 : 215
-        let barHalfHeight: CGFloat = 18
+        let availableWidth = max(0, viewportSize.width - 16)
+        let effectiveWidth = min(max(0, selectionActionBarSize.width), availableWidth)
+        let halfBarWidth = effectiveWidth / 2
+        let barHalfHeight = max(36, selectionActionBarSize.height) / 2
         let topY = barHalfHeight + 8
         guard let ID = selectionOrder.last,
               let frame = cardFrames[ID],
@@ -291,7 +324,7 @@ struct MailImageGalleryView: View {
 
         let x = min(
             max(frame.midX, halfBarWidth + 8),
-            max(halfBarWidth + 8, viewportSize.width - halfBarWidth - 8)
+            viewportSize.width - halfBarWidth - 8
         )
         return CGPoint(x: x, y: max(topY, frame.minY - barHalfHeight - 7))
     }
@@ -377,16 +410,11 @@ struct MailImageGalleryView: View {
         .onTapGesture(count: 2) {
             openFile(item)
         }
-        .onDrag {
-            guard let originalURL = completeOriginalURL(item) else {
-                if let candidate = item.sourceCandidate {
-                    downloadManager.downloadAttachmentsToDesktop([candidate])
-                    showTransientMessage("Download queued in Files from Mails.")
-                }
-                return NSItemProvider()
-            }
-            return NSItemProvider(contentsOf: originalURL) ?? NSItemProvider()
-        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 7, coordinateSpace: .local)
+                .onChanged { _ in beginNativeDrag(item) }
+                .onEnded { _ in nativeDragItemID = nil }
+        )
         .contextMenu {
             Button("Open File") {
                 openFile(item)
@@ -410,37 +438,113 @@ struct MailImageGalleryView: View {
     }
 
     private func toggle(_ item: MailImageItem) {
-        if !selectionModeEnabled {
-            if selectedIDs == Set([item.id]) {
-                selectedIDs.removeAll()
-                selectionOrder.removeAll()
+        withSelectionAnimation {
+            if !selectionModeEnabled {
+                if selectedIDs == Set([item.id]) {
+                    selectedIDs.removeAll()
+                    selectionOrder.removeAll()
+                } else {
+                    selectedIDs = [item.id]
+                    selectionOrder = [item.id]
+                }
+            } else if selectedIDs.contains(item.id) {
+                selectedIDs.remove(item.id)
+                selectionOrder.removeAll { $0 == item.id }
             } else {
-                selectedIDs = [item.id]
-                selectionOrder = [item.id]
+                selectedIDs.insert(item.id)
+                selectionOrder.removeAll { $0 == item.id }
+                selectionOrder.append(item.id)
             }
-        } else if selectedIDs.contains(item.id) {
-            selectedIDs.remove(item.id)
-            selectionOrder.removeAll { $0 == item.id }
-        } else {
-            selectedIDs.insert(item.id)
-            selectionOrder.removeAll { $0 == item.id }
-            selectionOrder.append(item.id)
         }
     }
 
     private func toggleSelectionMode() {
-        selectionModeEnabled.toggle()
-        if !selectionModeEnabled,
-           selectedIDs.count > 1,
-           let lastSelectedID = selectionOrder.last {
-            selectedIDs = [lastSelectedID]
-            selectionOrder = [lastSelectedID]
+        withSelectionAnimation {
+            selectionModeEnabled.toggle()
+            if !selectionModeEnabled,
+               selectedIDs.count > 1,
+               let lastSelectedID = selectionOrder.last {
+                selectedIDs = [lastSelectedID]
+                selectionOrder = [lastSelectedID]
+            }
         }
     }
 
     private func unselectAll() {
-        selectedIDs.removeAll()
-        selectionOrder.removeAll()
+        withSelectionAnimation {
+            selectedIDs.removeAll()
+            selectionOrder.removeAll()
+        }
+    }
+
+    private func selectAll() {
+        withSelectionAnimation {
+            let IDs = chronologicallyOrderedItems.map(\.id)
+            selectedIDs = Set(IDs)
+            selectionOrder = IDs
+        }
+    }
+
+    private func withSelectionAnimation(_ updates: () -> Void) {
+        withAnimation(.timingCurve(0.22, 0.78, 0.28, 1, duration: 0.24), updates)
+    }
+
+    private func beginNativeDrag(_ item: MailImageItem) {
+        guard nativeDragItemID == nil else { return }
+        nativeDragItemID = item.id
+
+        let IDs: Set<UUID>
+        if selectionModeEnabled {
+            if selectedIDs.contains(item.id) {
+                IDs = selectedIDs
+            } else {
+                IDs = selectedIDs.union([item.id])
+                withSelectionAnimation {
+                    selectedIDs = IDs
+                    selectionOrder.removeAll { $0 == item.id }
+                    selectionOrder.append(item.id)
+                }
+            }
+        } else {
+            IDs = [item.id]
+            if selectedIDs != IDs {
+                withSelectionAnimation {
+                    selectedIDs = IDs
+                    selectionOrder = [item.id]
+                }
+            }
+        }
+
+        let items = chronologicallyOrderedItems.filter { IDs.contains($0.id) }
+        let missingItems = items.filter { completeOriginalURL($0) == nil }
+        guard missingItems.isEmpty else {
+            let candidates = missingItems.compactMap(\.sourceCandidate)
+            if !candidates.isEmpty {
+                downloadManager.prepareOriginalsForDragging(candidates)
+                showTransientMessage(
+                    candidates.count == 1
+                        ? "Preparing the original for dragging…"
+                        : "Preparing \(candidates.count) originals for dragging…"
+                )
+            } else {
+                showTransientMessage("The original file is unavailable.")
+            }
+            return
+        }
+
+        let URLs = items.compactMap(completeOriginalURL)
+        let previewURL = item.sourceCandidate.flatMap(downloadManager.thumbnailURL)
+            ?? completeOriginalURL(item)
+        let started = NativeFileDragController.shared.beginDragging(
+            URLs: URLs,
+            previewURL: previewURL
+        ) {
+            nativeDragItemID = nil
+        }
+        if !started {
+            nativeDragItemID = nil
+            showTransientMessage("The file drag could not be started.")
+        }
     }
 
     private func saveSelectedToDesktop() {
@@ -648,6 +752,15 @@ private struct GalleryCardFramePreferenceKey: PreferenceKey {
         nextValue: () -> [UUID: CGRect]
     ) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct SelectionActionBarSizePreferenceKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next.width > 0, next.height > 0 { value = next }
     }
 }
 

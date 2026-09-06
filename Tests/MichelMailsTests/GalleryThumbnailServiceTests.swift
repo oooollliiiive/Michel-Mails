@@ -241,6 +241,41 @@ func missingPreviewStartsRemoteDownload() {
     #expect(manager.items.count == 1)
 }
 
+@Test("Dragging queues a missing original without opening or exporting it")
+@MainActor
+func missingDragOriginalIsPrepared() {
+    let uniqueID = UUID().uuidString
+    let candidate = IndexedMailAttachmentCandidate(
+        messageIdentifier: "drag-\(uniqueID)",
+        localIdentifier: uniqueID,
+        sender: "Michel",
+        subject: "Drag picture",
+        preview: "",
+        receivedAt: Date(),
+        accountName: "Google",
+        mailboxName: "Inbox",
+        attachmentIdentifier: "image-1",
+        attachmentName: "drag.jpg",
+        MIMEType: "image/jpeg",
+        sizeBytes: 12_000,
+        kind: .image,
+        sourcePath: FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-drag-\(uniqueID).jpg")
+            .path
+    )
+    let manager = AttachmentDownloadManager(startsTransfersAutomatically: false)
+
+    manager.prepareOriginalsForDragging([candidate])
+
+    let record = manager.record(for: candidate)
+    #expect(record?.state == .queued)
+    #expect(record?.needsOriginal == true)
+    #expect(record?.needsExport == false)
+    #expect(record?.openWhenReady == false)
+    #expect(record?.allowsMailDownload == true)
+    #expect(record?.isVisibleInDownloads == true)
+}
+
 @Test("Original attachment cache expires files after seven days")
 func temporaryOriginalRetention() throws {
     let root = FileManager.default.temporaryDirectory

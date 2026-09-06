@@ -125,7 +125,7 @@ final class AttachmentDownloadManager: ObservableObject {
                 record.isVisibleInDownloads = true
                 if queuedKeys.insert(key).inserted { queue.append(key) }
                 queuedRemoteDownload = true
-            } else if !record.needsThumbnail && !record.needsExport {
+            } else if !record.needsThumbnail && !record.needsExport && !record.needsOriginal {
                 record.state = .ready
             }
             updatedRecords[key] = record
@@ -194,6 +194,24 @@ final class AttachmentDownloadManager: ObservableObject {
             visibleInDownloads: true,
             exportDirectoryURL: nil
         )
+        pumpQueue()
+    }
+
+    func prepareOriginalsForDragging(_ candidates: [IndexedMailAttachmentCandidate]) {
+        guard !candidates.isEmpty else { return }
+        onPresentDownloads?()
+        for candidate in candidates.reversed() {
+            enqueue(
+                candidate,
+                needsThumbnail: false,
+                needsExport: false,
+                needsOriginal: true,
+                priority: true,
+                allowsMailDownload: true,
+                visibleInDownloads: true,
+                exportDirectoryURL: nil
+            )
+        }
         pumpQueue()
     }
 
@@ -271,6 +289,7 @@ final class AttachmentDownloadManager: ObservableObject {
         _ candidate: IndexedMailAttachmentCandidate,
         needsThumbnail: Bool,
         needsExport: Bool,
+        needsOriginal: Bool = false,
         priority: Bool,
         allowsMailDownload: Bool,
         visibleInDownloads: Bool,
@@ -291,6 +310,9 @@ final class AttachmentDownloadManager: ObservableObject {
         record.candidate = candidate
         record.needsThumbnail = record.needsThumbnail || (needsThumbnail && record.thumbnailURL == nil)
         record.needsExport = record.needsExport || needsExport
+        record.needsOriginal = record.needsOriginal || (
+            needsOriginal && originalURL(for: candidate) == nil
+        )
         if let exportDirectoryURL { record.exportDirectoryURL = exportDirectoryURL }
         record.allowsMailDownload = record.allowsMailDownload || allowsMailDownload
         record.shouldCacheOriginal = true
@@ -298,7 +320,7 @@ final class AttachmentDownloadManager: ObservableObject {
         record.openWhenReady = record.openWhenReady || openWhenReady
         record.errorMessage = nil
 
-        let hasWork = record.needsThumbnail || record.needsExport || record.openWhenReady
+        let hasWork = record.needsThumbnail || record.needsExport || record.needsOriginal || record.openWhenReady
         if hasWork && !activeKeys.contains(key) {
             record.state = .queued
             queue.removeAll { $0 == key }
@@ -459,6 +481,7 @@ final class AttachmentDownloadManager: ObservableObject {
                 return
             }
         }
+        record.needsOriginal = false
         if record.openWhenReady {
             NSWorkspace.shared.open(durableURL)
             record.openWhenReady = false

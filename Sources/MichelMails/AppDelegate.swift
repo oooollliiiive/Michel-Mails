@@ -110,7 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.title = "Michel Mails"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.isMovableByWindowBackground = true
+        // Keep file drags Finder-like. The standard title bar still moves the
+        // window, but dragging a thumbnail must never move the whole panel.
+        panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.isFloatingPanel = false
         panel.hidesOnDeactivate = false

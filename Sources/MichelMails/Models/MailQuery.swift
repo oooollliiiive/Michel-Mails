@@ -156,6 +156,7 @@ struct AttachmentTransferRecord: Identifiable, Equatable, Sendable {
     var exportDirectoryURL: URL?
     var needsThumbnail: Bool
     var needsExport: Bool
+    var needsOriginal = false
     var allowsMailDownload = false
     var automaticallyDownloadIfNeeded = false
     var shouldCacheOriginal = false

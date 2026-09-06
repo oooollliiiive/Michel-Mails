@@ -36,11 +36,11 @@ Le MVP comprend :
 - la détection des images jointes en excluant les petits logos, les bannières et les éléments de signature ;
 - des interrupteurs pour contrôler l’affichage des images parasites et des emails classés Junk ;
 - une grille universelle inspirée de Michel OS pour les images, PDF, documents, tableurs, présentations, archives, fichiers audio et vidéo ;
-- un mode `Select` inspiré d’iOS : sélection unique sans badge par défaut, clic sur le fichier déjà sélectionné pour le désélectionner, et multiselection uniquement lorsqu’il est activé ;
+- la barre de sélection de Michel OS : sélection simple sans badge, `Select Files`, `Single selection`, `Select All` et `Unselect all`, conservation du dernier fichier au retour en sélection simple, positionnement au-dessus du dernier fichier visible et déplacement animé ;
 - la prise en compte du premier clic sur une vignette même lorsque Michel Mails revient de l’arrière-plan ;
 - la mémorisation du nombre choisi dans le bouton `Last Images` entre deux lancements ;
 - des vignettes non bloquantes pour les formats d’image reconnus par macOS, la première page des PDF et les vidéos, avec le nom et la date du fichier ;
-- le glisser-déposer des fichiers vers le Finder ou une autre application ;
+- le glisser-déposer natif d’un ou plusieurs originaux vers le Finder, Photoshop ou une autre application, sans déplacer la fenêtre de Michel Mails ;
 - le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
 - une préparation automatique des vignettes : les fichiers locaux sont traités en parallèle et les pièces jointes manquantes sont demandées à Mail sans clic ;
 - des récupérations auprès de Mail exécutées une par une afin de préserver sa réactivité, toujours priorisées du fichier le plus récent au plus ancien ;
