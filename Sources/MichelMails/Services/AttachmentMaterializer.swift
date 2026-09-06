@@ -117,14 +117,7 @@ enum AttachmentMaterializer {
     static func temporaryDestination(
         for candidate: IndexedMailAttachmentCandidate
     ) throws -> URL {
-        let root = try FileManager.default.url(
-            for: .cachesDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        .appendingPathComponent("com.michelos.michelmails", isDirectory: true)
-        .appendingPathComponent("Downloads", isDirectory: true)
+        let root = try temporaryRootDirectory()
         try FileManager.default.createDirectory(
             at: root,
             withIntermediateDirectories: true,
@@ -133,6 +126,24 @@ enum AttachmentMaterializer {
         let extensionName = URL(fileURLWithPath: candidate.attachmentName).pathExtension
         let suffix = extensionName.isEmpty ? "" : ".\(extensionName)"
         return root.appendingPathComponent(UUID().uuidString + suffix)
+    }
+
+    static func clearTemporaryFiles() throws {
+        let root = try temporaryRootDirectory()
+        if FileManager.default.fileExists(atPath: root.path) {
+            try FileManager.default.removeItem(at: root)
+        }
+    }
+
+    private static func temporaryRootDirectory() throws -> URL {
+        try FileManager.default.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent("com.michelos.michelmails", isDirectory: true)
+        .appendingPathComponent("Downloads", isDirectory: true)
     }
 
     private static func extractLocal(
@@ -168,7 +179,7 @@ enum AttachmentMaterializer {
         arguments: [String],
         timeout: TimeInterval
     ) async throws -> String {
-        try await Task.detached(priority: .userInitiated) {
+        let worker = Task.detached(priority: .userInitiated) {
             let process = Process()
             let standardOutput = Pipe()
             let standardError = Pipe()
@@ -177,21 +188,21 @@ enum AttachmentMaterializer {
             process.standardOutput = standardOutput
             process.standardError = standardError
             try process.run()
-
-            let timeoutWorkItem = DispatchWorkItem {
-                if process.isRunning {
-                    process.terminate()
-                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1) {
-                        if process.isRunning { Darwin.kill(process.processIdentifier, SIGKILL) }
-                    }
-                }
+            defer {
+                if process.isRunning { stop(process) }
             }
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(
-                deadline: .now() + timeout,
-                execute: timeoutWorkItem
-            )
-            process.waitUntilExit()
-            timeoutWorkItem.cancel()
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning {
+                if Task.isCancelled {
+                    stop(process)
+                    throw CancellationError()
+                }
+                if Date() >= deadline {
+                    stop(process)
+                    throw AttachmentMaterializerError.mailDidNotRespond
+                }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
 
             let output = String(
                 data: standardOutput.fileHandleForReading.readDataToEndOfFile(),
@@ -211,7 +222,19 @@ enum AttachmentMaterializer {
                 throw AttachmentMaterializerError.mailDidNotRespond
             }
             return output
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
+    private static func stop(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        Thread.sleep(forTimeInterval: 0.1)
+        if process.isRunning { Darwin.kill(process.processIdentifier, SIGKILL) }
     }
 
     static let downloadScript = #"""

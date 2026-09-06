@@ -65,6 +65,13 @@ enum PersistentThumbnailStore {
         }
     }
 
+    static func clearAll() throws {
+        let root = try defaultRootDirectory()
+        if FileManager.default.fileExists(atPath: root.path) {
+            try FileManager.default.removeItem(at: root)
+        }
+    }
+
     private static func defaultRootDirectory() throws -> URL {
         try FileManager.default.url(
             for: .applicationSupportDirectory,

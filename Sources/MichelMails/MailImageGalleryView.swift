@@ -7,7 +7,7 @@ struct MailImageGalleryView: View {
     @ObservedObject var downloadManager: AttachmentDownloadManager
     @Binding var showParasiteImages: Bool
     @Binding var showJunkImages: Bool
-    let onOpenEmail: (MailMessageItem) -> Void
+    let onOpenEmail: (MailMessageItem, @escaping (Bool, String) -> Void) -> Void
     let onClose: () -> Void
 
     @State private var selectedIDs: Set<UUID> = []
@@ -17,6 +17,7 @@ struct MailImageGalleryView: View {
     @State private var statusMessage = "Select files · drag them anywhere or copy and paste"
     @State private var transientMessage: String?
     @State private var transientMessageTask: Task<Void, Never>?
+    @State private var openingMailItemID: UUID?
 
     private let cardWidth: CGFloat = 200
     private let cardHeight: CGFloat = 174
@@ -222,6 +223,19 @@ struct MailImageGalleryView: View {
             Text(statusMessage)
                 .lineLimit(1)
             Spacer()
+            Button(role: .destructive) {
+                statusMessage = "Clearing thumbnails and cached originals…"
+                downloadManager.resetPreviewCaches()
+            } label: {
+                Label(
+                    downloadManager.isResettingCaches ? "Cancelling…" : "Cancel Thumbnails",
+                    systemImage: "trash"
+                )
+            }
+            .buttonStyle(.borderless)
+            .disabled(downloadManager.isResettingCaches)
+            .help("Cancel preview downloads, clear all cached thumbnails and cached originals, then restart this gallery. Files saved on the Desktop are not deleted.")
+
             if !selectedIDs.isEmpty {
                 Text(selectedIDs.count == 1 ? "1 selected" : "\(selectedIDs.count) selected")
                     .fontWeight(.medium)
@@ -231,6 +245,11 @@ struct MailImageGalleryView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 18)
         .frame(height: 42)
+        .onChange(of: downloadManager.isResettingCaches) { isResetting in
+            if !isResetting {
+                statusMessage = "Thumbnail cache cleared · previews restarted"
+            }
+        }
     }
 
     private var galleryTitle: String {
@@ -273,9 +292,9 @@ struct MailImageGalleryView: View {
 
             if selectedIDs.count == 1 {
                 Button {
-                    if let item = lastSelectedItem { onOpenEmail(item.message) }
+                    if let item = lastSelectedItem { openEmail(item) }
                 } label: {
-                    Text("Open in Mail")
+                    Text(openingMailItemID == lastSelectedItem?.id ? "Opening…" : "Open in Mail")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 12)
@@ -283,6 +302,7 @@ struct MailImageGalleryView: View {
                         .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
+                .disabled(openingMailItemID != nil)
             }
 
             Button(action: unselectAll) {
@@ -343,12 +363,12 @@ struct MailImageGalleryView: View {
                             .minimumScaleFactor(0.62)
                             .allowsTightening(true)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, selected ? 27 : 5)
+                            .padding(.horizontal, selected && selectionModeEnabled ? 27 : 5)
                             .frame(maxWidth: .infinity)
                             .frame(height: 18, alignment: .center)
                             .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
 
-                        if selected {
+                        if selected && selectionModeEnabled {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 19, weight: .semibold))
                                 .symbolRenderingMode(.palette)
@@ -420,7 +440,7 @@ struct MailImageGalleryView: View {
                 openFile(item)
             }
             Button("Open in Email") {
-                onOpenEmail(item.message)
+                openEmail(item)
             }
             Divider()
             Button("Copy File") {
@@ -439,8 +459,13 @@ struct MailImageGalleryView: View {
 
     private func toggle(_ item: MailImageItem) {
         if !selectionModeEnabled {
-            selectedIDs = [item.id]
-            selectionOrder = [item.id]
+            if selectedIDs == Set([item.id]) {
+                selectedIDs.removeAll()
+                selectionOrder.removeAll()
+            } else {
+                selectedIDs = [item.id]
+                selectionOrder = [item.id]
+            }
         } else if selectedIDs.contains(item.id) {
             selectedIDs.remove(item.id)
             selectionOrder.removeAll { $0 == item.id }
@@ -449,7 +474,9 @@ struct MailImageGalleryView: View {
             selectionOrder.removeAll { $0 == item.id }
             selectionOrder.append(item.id)
         }
-        statusMessage = "Drag files, copy them, or save them"
+        statusMessage = selectedIDs.isEmpty
+            ? "Select a file"
+            : "Drag files, copy them, or save them"
     }
 
     private func toggleSelectionMode() {
@@ -530,13 +557,16 @@ struct MailImageGalleryView: View {
         }
     }
 
-    private func showTransientMessage(_ message: String) {
+    private func showTransientMessage(
+        _ message: String,
+        durationNanoseconds: UInt64 = 2_400_000_000
+    ) {
         transientMessageTask?.cancel()
         withAnimation(.easeOut(duration: 0.16)) {
             transientMessage = message
         }
         transientMessageTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            try? await Task.sleep(nanoseconds: durationNanoseconds)
             guard !Task.isCancelled else { return }
             withAnimation(.easeIn(duration: 0.18)) {
                 transientMessage = nil
@@ -600,6 +630,22 @@ struct MailImageGalleryView: View {
         } else if let candidate = item.sourceCandidate {
             downloadManager.openAttachment(candidate)
             showTransientMessage("Downloading the original file…")
+        }
+    }
+
+    private func openEmail(_ item: MailImageItem) {
+        guard openingMailItemID == nil else { return }
+        openingMailItemID = item.id
+        transientMessageTask?.cancel()
+        withAnimation(.easeOut(duration: 0.16)) {
+            transientMessage = "Opening email in Mail…"
+        }
+        onOpenEmail(item.message) { success, message in
+            openingMailItemID = nil
+            showTransientMessage(
+                message,
+                durationNanoseconds: success ? 1_800_000_000 : 5_000_000_000
+            )
         }
     }
 
@@ -683,6 +729,10 @@ private struct GalleryThumbnail: View {
             ?? candidate.flatMap(downloadManager.originalURL)
     }
 
+    private var loadIdentifier: String {
+        "\(downloadManager.cacheResetGeneration)|\(displayURL?.path ?? "missing")"
+    }
+
     var body: some View {
         Group {
             if let image {
@@ -755,7 +805,7 @@ private struct GalleryThumbnail: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .task(id: displayURL) {
+        .task(id: loadIdentifier) {
             guard let displayURL else {
                 image = nil
                 isFallback = false

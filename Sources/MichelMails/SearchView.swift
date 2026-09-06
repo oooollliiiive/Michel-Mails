@@ -228,7 +228,9 @@ struct SearchView: View {
                         get: { viewModel.showJunkImages },
                         set: viewModel.setShowJunkImages
                     ),
-                    onOpenEmail: viewModel.openMessage,
+                    onOpenEmail: { message, completion in
+                        viewModel.openMessage(message, completion: completion)
+                    },
                     onClose: viewModel.closeGallery
                 )
                 .id(gallery.id)
@@ -239,7 +241,7 @@ struct SearchView: View {
                     results: results,
                     indexController: indexController,
                     downloadManager: downloadManager,
-                    onOpenEmail: viewModel.openMessage,
+                    onOpenEmail: { message in viewModel.openMessage(message) },
                     onDownloadAttachments: viewModel.downloadAttachments,
                     onClose: viewModel.closeResults
                 )

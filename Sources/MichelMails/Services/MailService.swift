@@ -92,6 +92,14 @@ final class MailService {
 
     func openMessage(_ message: MailMessageItem) async throws {
         let identifier = message.reference.messageIdentifier
+        if await Self.openLocalMessageFile(at: message.reference.sourcePath) {
+            return
+        }
+        if let messageURL = Self.messageURL(for: identifier),
+           NSWorkspace.shared.open(messageURL) {
+            return
+        }
+
         var scriptError: Error?
         do {
             let output = try await Self.runAppleScript(
@@ -101,7 +109,8 @@ final class MailService {
                     message.reference.localIdentifier,
                     message.reference.accountName,
                     message.reference.mailboxName
-                ]
+                ],
+                timeout: 8
             )
             if output.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
                 return
@@ -110,13 +119,6 @@ final class MailService {
             scriptError = error
         }
 
-        if await Self.openLocalMessageFile(at: message.reference.sourcePath) {
-            return
-        }
-        if let messageURL = Self.messageURL(for: identifier),
-           NSWorkspace.shared.open(messageURL) {
-            return
-        }
         if let scriptError { throw scriptError }
         throw MichelMailsError.mail("The original email could not be opened.")
     }

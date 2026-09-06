@@ -5,6 +5,8 @@ import Foundation
 final class AttachmentDownloadManager: ObservableObject {
     @Published private(set) var records: [String: AttachmentTransferRecord] = [:]
     @Published private(set) var orderedKeys: [String] = []
+    @Published private(set) var cacheResetGeneration = 0
+    @Published private(set) var isResettingCaches = false
 
     var onPresentDownloads: (() -> Void)?
 
@@ -17,6 +19,9 @@ final class AttachmentDownloadManager: ObservableObject {
     private var mailCooldown = false
     private var presentedAutomaticDownloads = false
     private var finishedRowTasks: [String: Task<Void, Never>] = [:]
+    private var transferTasks: [String: Task<Void, Never>] = [:]
+    private var transferGeneration = 0
+    private var lastPreparedCandidates: [IndexedMailAttachmentCandidate] = []
 
     init(startsTransfersAutomatically: Bool = true) {
         self.startsTransfersAutomatically = startsTransfersAutomatically
@@ -58,6 +63,7 @@ final class AttachmentDownloadManager: ObservableObject {
     }
 
     func prepareThumbnails(_ candidates: [IndexedMailAttachmentCandidate]) {
+        lastPreparedCandidates = candidates
         presentedAutomaticDownloads = false
         let orderedCandidates = candidates.sorted {
             ($0.receivedAt ?? .distantPast) > ($1.receivedAt ?? .distantPast)
@@ -208,6 +214,39 @@ final class AttachmentDownloadManager: ObservableObject {
         highPriorityKeys.subtract(removable)
     }
 
+    func resetPreviewCaches() {
+        guard !isResettingCaches else { return }
+        isResettingCaches = true
+        transferGeneration &+= 1
+        let interruptedTasks = Array(transferTasks.values)
+        interruptedTasks.forEach { $0.cancel() }
+        transferTasks.removeAll()
+        finishedRowTasks.values.forEach { $0.cancel() }
+        finishedRowTasks.removeAll()
+        queue.removeAll()
+        activeKeys.removeAll()
+        activeMailKeys.removeAll()
+        highPriorityKeys.removeAll()
+        mailCooldown = false
+        records.removeAll()
+        orderedKeys.removeAll()
+        cacheResetGeneration &+= 1
+        let candidates = lastPreparedCandidates
+
+        Task { [weak self] in
+            for task in interruptedTasks { await task.value }
+            await Task.detached(priority: .utility) {
+                try? PersistentThumbnailStore.clearAll()
+                try? PersistentAttachmentStore.clearAll()
+                try? AttachmentMaterializer.clearTemporaryFiles()
+            }.value
+            guard let self else { return }
+            self.cacheResetGeneration &+= 1
+            self.isResettingCaches = false
+            self.prepareThumbnails(candidates)
+        }
+    }
+
     func showDestinationFolder() {
         guard let directory = try? Self.destinationDirectory() else { return }
         NSWorkspace.shared.open(directory)
@@ -286,8 +325,9 @@ final class AttachmentDownloadManager: ObservableObject {
             if record.allowsMailDownload { activeMailKeys.insert(key) }
             let candidate = record.candidate
             let attemptAllowsMailDownload = record.allowsMailDownload
+            let generation = transferGeneration
 
-            Task { [weak self] in
+            let task = Task { [weak self] in
                 do {
                     let existingOriginal = PersistentAttachmentStore.existingOriginalURL(
                         for: candidate
@@ -314,24 +354,29 @@ final class AttachmentDownloadManager: ObservableObject {
                     await self?.finishSuccessfulTransfer(
                         key: key,
                         candidate: candidate,
-                        materializedURL: materializedURL
+                        materializedURL: materializedURL,
+                        generation: generation
                     )
                 } catch {
                     self?.finishFailedTransfer(
                         key: key,
                         error: error,
-                        attemptAllowedMailDownload: attemptAllowsMailDownload
+                        attemptAllowedMailDownload: attemptAllowsMailDownload,
+                        generation: generation
                     )
                 }
             }
+            transferTasks[key] = task
         }
     }
 
     private func finishSuccessfulTransfer(
         key: String,
         candidate: IndexedMailAttachmentCandidate,
-        materializedURL: URL
+        materializedURL: URL,
+        generation: Int
     ) async {
+        guard generation == transferGeneration else { return }
         guard var record = records[key] else {
             releaseActiveTransfer(key)
             pumpQueue()
@@ -351,7 +396,8 @@ final class AttachmentDownloadManager: ObservableObject {
                 finishFailedTransfer(
                     key: key,
                     error: error,
-                    attemptAllowedMailDownload: true
+                    attemptAllowedMailDownload: true,
+                    generation: generation
                 )
                 return
             }
@@ -366,7 +412,8 @@ final class AttachmentDownloadManager: ObservableObject {
                 finishFailedTransfer(
                     key: key,
                     error: AttachmentMaterializerError.incomplete,
-                    attemptAllowedMailDownload: record.allowsMailDownload
+                    attemptAllowedMailDownload: record.allowsMailDownload,
+                    generation: generation
                 )
                 return
             }
@@ -391,7 +438,8 @@ final class AttachmentDownloadManager: ObservableObject {
                 finishFailedTransfer(
                     key: key,
                     error: error,
-                    attemptAllowedMailDownload: record.allowsMailDownload
+                    attemptAllowedMailDownload: record.allowsMailDownload,
+                    generation: generation
                 )
                 return
             }
@@ -412,8 +460,10 @@ final class AttachmentDownloadManager: ObservableObject {
     private func finishFailedTransfer(
         key: String,
         error: Error,
-        attemptAllowedMailDownload: Bool
+        attemptAllowedMailDownload: Bool,
+        generation: Int
     ) {
+        guard generation == transferGeneration else { return }
         guard var record = records[key] else { return }
         finishedRowTasks.removeValue(forKey: key)?.cancel()
         releaseActiveTransfer(key)
@@ -446,6 +496,7 @@ final class AttachmentDownloadManager: ObservableObject {
     }
 
     private func releaseActiveTransfer(_ key: String) {
+        transferTasks.removeValue(forKey: key)
         activeKeys.remove(key)
         let releasedMailTransfer = activeMailKeys.remove(key) != nil
         guard releasedMailTransfer else { return }

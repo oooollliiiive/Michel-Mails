@@ -328,14 +328,19 @@ final class SearchViewModel: ObservableObject {
         statusText = "Copy cancelled."
     }
 
-    func openMessage(_ message: MailMessageItem) {
+    func openMessage(
+        _ message: MailMessageItem,
+        completion: ((Bool, String) -> Void)? = nil
+    ) {
         statusText = "Opening email in Mail…"
         Task {
             do {
                 try await mailService.openMessage(message)
                 statusText = "Email opened in Mail."
+                completion?(true, statusText)
             } catch {
                 statusText = userFacingMessage(for: error)
+                completion?(false, statusText)
             }
         }
     }

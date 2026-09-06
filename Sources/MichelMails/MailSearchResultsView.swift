@@ -230,6 +230,10 @@ private struct EmailAttachmentThumbnail: View {
         downloadManager.thumbnailURL(for: candidate)
     }
 
+    private var loadIdentifier: String {
+        "\(downloadManager.cacheResetGeneration)|\(thumbnailURL?.path ?? "missing")"
+    }
+
     var body: some View {
         ZStack {
             Color(nsColor: .controlBackgroundColor)
@@ -278,7 +282,7 @@ private struct EmailAttachmentThumbnail: View {
                 )
         )
         .help(candidate.attachmentName)
-        .task(id: thumbnailURL) {
+        .task(id: loadIdentifier) {
             guard let thumbnailURL else {
                 image = nil
                 return

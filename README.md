@@ -36,7 +36,7 @@ Le MVP comprend :
 - la détection des images jointes en excluant les petits logos, les bannières et les éléments de signature ;
 - des interrupteurs pour contrôler l’affichage des images parasites et des emails classés Junk ;
 - une grille universelle inspirée de Michel OS pour les images, PDF, documents, tableurs, présentations, archives, fichiers audio et vidéo ;
-- un mode `Select` inspiré d’iOS : sélection unique par défaut et multiselection uniquement lorsqu’il est activé ;
+- un mode `Select` inspiré d’iOS : sélection unique sans badge par défaut, clic sur le fichier déjà sélectionné pour le désélectionner, et multiselection uniquement lorsqu’il est activé ;
 - la mémorisation du nombre choisi dans le bouton `Last Images` entre deux lancements ;
 - des vignettes non bloquantes pour les formats d’image reconnus par macOS, la première page des PDF et les vidéos, avec le nom et la date du fichier ;
 - le glisser-déposer des fichiers vers le Finder ou une autre application ;
@@ -48,6 +48,8 @@ Le MVP comprend :
 - le refus systématique des fichiers vides ou incomplets avant toute copie ;
 - une colonne `Downloads` compacte intégrée à droite de la fenêtre principale, ouverte automatiquement, refermable et consultable à la demande, ainsi qu’une destination commune `Desktop/Files from Mails`, directement visible par Michel OS ;
 - la disparition automatique d’une ligne de téléchargement réussi après deux secondes, tandis que les erreurs restent visibles ;
+- un bouton temporaire de diagnostic `Cancel Thumbnails`, qui interrompt la file, vide les vignettes et originaux du cache privé, puis relance automatiquement la grille sans toucher aux fichiers du Bureau ;
+- une ouverture d’email qui utilise d’abord son fichier local indexé, avec un état visible `Opening…` et un résultat explicite dans la grille ;
 - la fusion des anciennes et nouvelles identités d’un même email et la lecture correcte des noms de pièces jointes contenant un point-virgule ;
 - une grille horizontale qui répond aussi à la molette verticale d’une souris classique ;
 - une confirmation avant de copier des images dans un dossier ;
