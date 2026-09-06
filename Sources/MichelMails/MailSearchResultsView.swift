@@ -241,7 +241,10 @@ private struct EmailAttachmentThumbnail: View {
     var body: some View {
         ZStack {
             Color(nsColor: .controlBackgroundColor)
-            if let renderedImage = image ?? immediatelyAvailableImage {
+            if downloadManager.isResettingCaches {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let renderedImage = image ?? immediatelyAvailableImage {
                 Image(nsImage: renderedImage)
                     .resizable()
                     .scaledToFill()
@@ -287,8 +290,9 @@ private struct EmailAttachmentThumbnail: View {
         )
         .help(candidate.attachmentName)
         .task(id: loadIdentifier) {
+            image = nil
+            guard !downloadManager.isResettingCaches else { return }
             guard let thumbnailURL else {
-                image = nil
                 return
             }
             image = downloadManager.cachedImage(at: thumbnailURL)

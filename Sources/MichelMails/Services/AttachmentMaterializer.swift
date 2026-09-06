@@ -145,13 +145,18 @@ enum AttachmentMaterializer {
     }
 
     static func clearTemporaryFiles() throws {
-        let root = try temporaryRootDirectory()
+        let root = try privateCacheRootDirectory()
         if FileManager.default.fileExists(atPath: root.path) {
             try FileManager.default.removeItem(at: root)
         }
     }
 
     private static func temporaryRootDirectory() throws -> URL {
+        try privateCacheRootDirectory()
+            .appendingPathComponent("Downloads", isDirectory: true)
+    }
+
+    private static func privateCacheRootDirectory() throws -> URL {
         try FileManager.default.url(
             for: .cachesDirectory,
             in: .userDomainMask,
@@ -159,7 +164,6 @@ enum AttachmentMaterializer {
             create: true
         )
         .appendingPathComponent("com.michelos.michelmails", isDirectory: true)
-        .appendingPathComponent("Downloads", isDirectory: true)
     }
 
     private static func extractLocal(

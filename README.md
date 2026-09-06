@@ -50,7 +50,7 @@ Le MVP comprend :
 - le refus systématique des fichiers vides ou incomplets avant toute copie ;
 - une colonne `Downloads` compacte intégrée à droite de la fenêtre principale, ouverte automatiquement, refermable et consultable à la demande, ainsi qu’une destination commune `Desktop/Files from Mails`, directement visible par Michel OS ;
 - la disparition automatique d’une ligne de téléchargement réussi après deux secondes, tandis que les erreurs restent visibles ;
-- un bouton temporaire de diagnostic `Reset Thumbnails` placé directement dans l’en-tête de la grille : il interrompt la file, vide les vignettes et originaux du cache privé, puis relance automatiquement la grille sans toucher aux fichiers du Bureau ;
+- un bouton temporaire de diagnostic `Reset Thumbnails` placé dans la barre principale : toutes les cartes sont vidées immédiatement, la file est interrompue, l’ensemble des vignettes, originaux temporaires, téléchargements incomplets et anciens fichiers de grille du cache privé est supprimé, puis toute la grille est relancée sans toucher aux fichiers du Bureau ;
 - une ouverture d’email qui utilise d’abord son fichier local indexé, avec un état visible `Opening…` et un résultat explicite dans la grille ;
 - la réparation automatique d’une référence devenue obsolète après le déplacement ou la suppression d’un email : une copie locale compatible de la même pièce jointe est utilisée, sinon la carte morte est retirée ;
 - la fermeture automatique de la colonne `Downloads` lorsque la grille est fermée ;

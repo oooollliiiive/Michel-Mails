@@ -130,9 +130,9 @@ struct MailImageGalleryView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Image(systemName: "photo.stack.fill")
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(
                     LinearGradient(
                         colors: [.indigo, .purple, .pink],
@@ -141,22 +141,16 @@ struct MailImageGalleryView: View {
                     )
                 )
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(galleryTitle)
-                    .font(.headline)
-                Text(gallerySubtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(galleryTitle)
+                .font(.system(size: 13, weight: .semibold))
+            Text(gallerySubtitle)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
 
             Spacer()
 
-            Text("Show Parasite Images")
-                .font(.system(size: 11.5, weight: .semibold))
-            Text(showParasiteImages ? "ON" : "OFF")
-                .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                .foregroundStyle(showParasiteImages ? Color.red : Color.secondary)
-                .frame(width: 24, alignment: .trailing)
+            Text("Parasites")
+                .font(.system(size: 10.5, weight: .semibold))
             Toggle("Show Parasite Images", isOn: $showParasiteImages)
                 .labelsHidden()
                 .toggleStyle(.switch)
@@ -164,44 +158,21 @@ struct MailImageGalleryView: View {
                 .help("Show suspected signatures, logos, icons, and tracking images. They are outlined in red.")
 
             Text("Junk")
-                .font(.system(size: 11.5, weight: .semibold))
-            Text(showJunkImages ? "ON" : "OFF")
-                .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                .foregroundStyle(showJunkImages ? Color.orange : Color.secondary)
-                .frame(width: 24, alignment: .trailing)
+                .font(.system(size: 10.5, weight: .semibold))
             Toggle("Junk", isOn: $showJunkImages)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .help("Include images from Junk and Spam mailboxes.")
 
-            Divider()
-                .frame(height: 20)
-
-            Button(role: .destructive) {
-                showTransientMessage(
-                    "Clearing thumbnails and cached originals…",
-                    durationNanoseconds: 4_000_000_000
-                )
-                downloadManager.resetPreviewCaches()
-            } label: {
-                Label(
-                    downloadManager.isResettingCaches ? "Resetting…" : "Reset Thumbnails",
-                    systemImage: "trash"
-                )
-                .font(.system(size: 11, weight: .semibold))
-            }
-            .disabled(downloadManager.isResettingCaches)
-            .help("Cancel preview downloads, clear all cached thumbnails and cached originals, then restart this gallery. Files saved on the Desktop are not deleted.")
-
             Button {
                 toggleSelectionMode()
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: selectionModeEnabled ? "checkmark.circle.fill" : "checkmark.circle")
-                    Text(selectionModeEnabled ? "Select ON" : "Select")
+                    Text("Select")
                 }
-                .font(.system(size: 11.5, weight: .bold))
+                .font(.system(size: 10.5, weight: .bold))
             }
             .buttonStyle(.borderedProminent)
             .tint(selectionModeEnabled ? Color.accentColor : Color.secondary)
@@ -223,8 +194,8 @@ struct MailImageGalleryView: View {
             .buttonStyle(.plain)
             .help("Close the gallery")
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .background(.ultraThinMaterial)
         .onChange(of: downloadManager.isResettingCaches) { isResetting in
             if !isResetting {
@@ -695,12 +666,13 @@ private struct GalleryThumbnail: View {
     }
 
     private var displayURL: URL? {
-        if item.hasOriginalFile,
-           FileManager.default.fileExists(atPath: item.cachedURL.path) {
-            return item.cachedURL
+        guard !downloadManager.isResettingCaches else { return nil }
+        if let candidate {
+            return downloadManager.thumbnailURL(for: candidate)
         }
-        return candidate.flatMap(downloadManager.thumbnailURL)
-            ?? candidate.flatMap(downloadManager.originalURL)
+        return FileManager.default.fileExists(atPath: item.cachedURL.path)
+            ? item.cachedURL
+            : nil
     }
 
     private var loadIdentifier: String {
@@ -713,7 +685,15 @@ private struct GalleryThumbnail: View {
 
     var body: some View {
         Group {
-            if let renderedImage = image ?? immediatelyAvailableImage {
+            if downloadManager.isResettingCaches {
+                VStack(spacing: 7) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Clearing preview…")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            } else if let renderedImage = image ?? immediatelyAvailableImage {
                 ZStack {
                     if isFallback || (item.kind != .image && item.kind != .video) {
                         Image(nsImage: renderedImage)
@@ -784,9 +764,10 @@ private struct GalleryThumbnail: View {
             }
         }
         .task(id: loadIdentifier) {
+            image = nil
+            isFallback = false
+            guard !downloadManager.isResettingCaches else { return }
             guard let displayURL else {
-                image = nil
-                isFallback = false
                 return
             }
             if let cachedImage = downloadManager.cachedImage(at: displayURL) {

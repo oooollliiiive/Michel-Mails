@@ -16,7 +16,7 @@ struct SearchView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-            VStack(spacing: 12) {
+            VStack(spacing: 9) {
             quickImageControls
 
             HStack(spacing: 12) {
@@ -285,7 +285,7 @@ struct SearchView: View {
     }
 
     private var quickImageControls: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Button {
                 setLatestImageCount(latestImageCount - 1)
                 scheduleQuickImageRefresh(delayNanoseconds: 50_000_000)
@@ -305,8 +305,8 @@ struct SearchView: View {
                 )
             } label: {
                 Text(latestImageCount == 1 ? "1 Last Image" : "\(latestImageCount) Last Images")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(minWidth: 104)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .frame(minWidth: 94)
             }
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.isWorking)
@@ -324,7 +324,7 @@ struct SearchView: View {
             .help("Show one more image")
 
             Divider()
-                .frame(height: 20)
+                .frame(height: 18)
 
             Picker("Direction", selection: $imageDirection) {
                 Text("Sent").tag(MailDirection.sent)
@@ -333,7 +333,7 @@ struct SearchView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(width: 105)
+            .frame(width: 90)
             .help("Choose sent emails, received emails, or both")
 
             CorrespondentComboBox(
@@ -341,12 +341,25 @@ struct SearchView: View {
                 items: viewModel.imageCorrespondents,
                 placeholder: "Everyone"
             )
-            .frame(minWidth: 170, idealWidth: 220, maxWidth: 260, minHeight: 24, maxHeight: 24)
+            .frame(minWidth: 145, idealWidth: 175, maxWidth: 205, minHeight: 24, maxHeight: 24)
             .help("Type part of a name or email address")
 
             Spacer(minLength: 0)
+
+            Button(role: .destructive) {
+                downloadManager.resetPreviewCaches()
+            } label: {
+                Label(
+                    downloadManager.isResettingCaches ? "Resetting…" : "Reset Thumbnails",
+                    systemImage: "trash"
+                )
+                .font(.system(size: 10.5, weight: .semibold))
+            }
+            .controlSize(.small)
+            .disabled(downloadManager.isResettingCaches)
+            .help("Clear every cached thumbnail and temporary original, then prepare the current results again. Files saved on the Desktop are not deleted.")
         }
-        .frame(height: 26)
+        .frame(height: 24)
     }
 
     private func scheduleQuickImageRefresh(delayNanoseconds: UInt64 = 350_000_000) {
