@@ -43,10 +43,13 @@ Le MVP comprend :
 - le glisser-déposer natif d’un ou plusieurs originaux vers le Finder, Photoshop ou une autre application, sans déplacer la fenêtre de Michel Mails ;
 - le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
 - le tag Finder automatique `From Email` sur chaque fichier enregistré, y compris lorsqu’une copie identique existe déjà dans le dossier choisi ;
+- la date de chaque téléchargement inscrite dans `com.michelos.downloaded-at` et dans la date de modification du fichier, remise à l’heure courante lorsque le même fichier est redemandé, tandis que `com.michelos.email-received-at` conserve la date de l’email pour reconnaître les doublons ;
 - une préparation automatique des vignettes : les fichiers locaux sont traités en parallèle et les pièces jointes manquantes sont demandées à Mail sans clic ;
 - des récupérations auprès de Mail toujours priorisées du fichier le plus récent au plus ancien ;
 - un bouton `Boost Downloads` dans le haut de la colonne, désactivé à chaque lancement, qui autorise jusqu’à cinq téléchargements simultanés au lieu d’un seul ;
 - un bouton contextuel `Download Now` pour placer immédiatement les fichiers sélectionnés en tête de la file, les plus récents en premier ;
+- `Download Now` interrompt proprement les transferts moins prioritaires, lance réellement la sélection choisie et conserve cette priorité pendant sa tentative automatique ;
+- la fin d’une pièce jointe ancienne ne fait plus remonter automatiquement toutes les autres pièces jointes de son email devant les fichiers récents ;
 - un watchdog court sur Mail : un téléchargement lent est repoussé derrière les nouvelles demandes, retenté automatiquement une fois avec un délai plus long, puis signalé sans jamais bloquer la suite de la file ;
 - le téléchargement réellement actif épinglé en haut de la colonne, avec `Stop`/`Resume`, `Retry Failed` et `Hide Failed` pour piloter clairement une longue file ;
 - un compteur de téléchargements terminés conservé dans la colonne même après la disparition des lignes réussies, et les contrôles `Stop`/`Resume` toujours visibles dans sa partie supérieure lorsqu’ils sont utiles ;

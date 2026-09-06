@@ -750,26 +750,7 @@ struct MailImageGalleryView: View {
     }
 
     private func displayDate(_ date: Date?) -> String {
-        guard let date else { return "Unknown date" }
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) {
-            let time = date.formatted(
-                Date.FormatStyle(date: .omitted, time: .shortened)
-                    .locale(Locale(identifier: "en_US"))
-            )
-            return "Today at \(time)"
-        }
-        let days = calendar.dateComponents(
-            [.day],
-            from: calendar.startOfDay(for: date),
-            to: calendar.startOfDay(for: Date())
-        ).day ?? 0
-        if days == 1 { return "1 day ago" }
-        if days > 1 { return "\(days) days ago" }
-        return date.formatted(
-            Date.FormatStyle(date: .abbreviated, time: .omitted)
-                .locale(Locale(identifier: "en_US"))
-        )
+        EmailRelativeDateFormatter.string(for: date)
     }
 }
 

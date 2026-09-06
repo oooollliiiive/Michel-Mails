@@ -101,6 +101,17 @@ func desktopDuplicateDetection() throws {
         .resourceValues(forKeys: [.tagNamesKey])
         .tagNames ?? []
     #expect(savedTags.contains("From Email"))
+    #expect(abs(
+        try #require(EmailDownloadMetadata.emailReceivedAt(for: firstSave.savedURLs[0]))
+            .timeIntervalSince(receivedAt)
+    ) < 0.01)
+
+    let oldDownloadDate = Date(timeIntervalSince1970: 1_600_000_000)
+    try EmailDownloadMetadata.markDownloaded(
+        firstSave.savedURLs[0],
+        emailReceivedAt: receivedAt,
+        downloadedAt: oldDownloadDate
+    )
 
     let secondSave = try DesktopFileSaver.save([item], to: desktopDirectory)
     #expect(secondSave.savedURLs.isEmpty)
@@ -112,6 +123,40 @@ func desktopDuplicateDetection() throws {
             expectedDate: receivedAt
         )
     )
+    let refreshedDownloadDate = try #require(
+        EmailDownloadMetadata.downloadedAt(for: firstSave.savedURLs[0])
+    )
+    #expect(refreshedDownloadDate > oldDownloadDate)
+    let refreshedModificationDate = try #require(
+        firstSave.savedURLs[0]
+            .resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate
+    )
+    #expect(abs(refreshedModificationDate.timeIntervalSince(refreshedDownloadDate)) < 1.1)
+}
+
+@Test("Long email ages use years plus remaining days")
+func longEmailAgeUsesYearsAndDays() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+    let now = try #require(calendar.date(from: DateComponents(
+        year: 2026,
+        month: 9,
+        day: 6,
+        hour: 12
+    )))
+    let received = try #require(calendar.date(from: DateComponents(
+        year: 2025,
+        month: 1,
+        day: 29,
+        hour: 12
+    )))
+
+    #expect(EmailRelativeDateFormatter.string(
+        for: received,
+        relativeTo: now,
+        calendar: calendar
+    ) == "1 year 220 days ago")
 }
 
 @Test("Incomplete zero-byte attachments are never copied")
@@ -333,8 +378,12 @@ func selectedDownloadsArePrioritizedNewestFirst() {
     let manager = AttachmentDownloadManager(startsTransfersAutomatically: false)
 
     manager.prepareThumbnails([oldCandidate, newCandidate])
-    manager.downloadNow([oldCandidate, newCandidate])
+    manager.retry(oldCandidate)
+    manager.stopAll()
+    #expect(manager.isPaused)
+    manager.downloadNow([newCandidate])
 
+    #expect(!manager.isPaused)
     #expect(manager.items.map(\.candidate.attachmentName) == ["new.jpg", "old.jpg"])
     #expect(manager.items.allSatisfy { $0.state == .queued })
 }

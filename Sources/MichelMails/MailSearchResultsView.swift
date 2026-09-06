@@ -80,7 +80,7 @@ struct MailSearchResultsView: View {
             .buttonStyle(.borderedProminent)
             .disabled(selectedItem == nil)
 
-            Button("Download Attachments to Desktop") {
+            Button("Download Attachments to Files from Mails") {
                 if let selectedItem { onDownloadAttachments(selectedItem) }
             }
             .disabled(selectedItem?.attachments.isEmpty != false)

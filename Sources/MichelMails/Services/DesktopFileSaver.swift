@@ -42,19 +42,21 @@ enum DesktopFileSaver {
                 expectedDate: referenceDate
             ) {
                 try FinderTagger.addFromEmailTag(to: proposedURL)
+                try EmailDownloadMetadata.markDownloaded(
+                    proposedURL,
+                    emailReceivedAt: referenceDate
+                )
                 duplicateCount += 1
                 continue
             }
 
             let destination = availableURL(for: proposedURL)
             try manager.copyItem(at: item.cachedURL, to: destination)
-            if let referenceDate {
-                try manager.setAttributes(
-                    [.modificationDate: referenceDate],
-                    ofItemAtPath: destination.path
-                )
-            }
             try FinderTagger.addFromEmailTag(to: destination)
+            try EmailDownloadMetadata.markDownloaded(
+                destination,
+                emailReceivedAt: referenceDate
+            )
             savedURLs.append(destination)
         }
 
@@ -78,16 +80,13 @@ enum DesktopFileSaver {
             return false
         }
 
-        switch (values.contentModificationDate, expectedDate) {
-        case (.none, .none):
-            return true
-        case let (.some(existing), .some(expected)):
-            // APFS stores sub-second dates, while email indexes can round to a
-            // whole second. Treat those representations as the same date.
-            return abs(existing.timeIntervalSince(expected)) < 1.1
-        default:
-            return false
-        }
+        guard let expectedDate else { return true }
+        let storedEmailDate = EmailDownloadMetadata.emailReceivedAt(for: URL)
+            ?? values.contentModificationDate
+        guard let storedEmailDate else { return false }
+        // APFS stores sub-second dates, while email indexes can round to a
+        // whole second. Treat those representations as the same date.
+        return abs(storedEmailDate.timeIntervalSince(expectedDate)) < 1.1
     }
 
     private static func safeFileName(_ value: String) -> String {
