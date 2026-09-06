@@ -21,6 +21,7 @@ func openMessageScriptCompiles() throws {
     var error: NSDictionary?
     #expect(script.compileAndReturnError(&error))
     #expect(error == nil)
+    #expect(MailService.openMessageScript.contains("openMessageByMetadata"))
 }
 
 @Test("The background attachment download script compiles")
@@ -33,6 +34,7 @@ func attachmentDownloadScriptCompiles() throws {
     #expect(AttachmentMaterializer.downloadScript.contains("set attemptResult to my saveMatchingAttachment"))
     #expect(AttachmentMaterializer.downloadScript.contains("if attemptResult is not \"0\" then return attemptResult"))
     #expect(!AttachmentMaterializer.downloadScript.contains("if my saveMatchingAttachment"))
+    #expect(AttachmentMaterializer.downloadScript.contains("saveAttachmentByMetadata"))
 }
 
 @Test("French copy prompt extracts sender, images, all results, and destination")
@@ -552,6 +554,58 @@ func duplicateMailIdentityDeduplication() async throws {
     let emails = try await database.searchMessages(MailQuery(keywords: ["cozy"]))
     #expect(emails.items.count == 1)
     #expect(emails.items[0].reference.mailboxName == "All Mail")
+}
+
+@Test("A zero-byte MIME shadow collapses into its physical Mail attachment")
+func MIMEPositionShadowDeduplication() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let attachmentDirectory = directory.appendingPathComponent("2.2", isDirectory: true)
+    try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let physicalURL = attachmentDirectory.appendingPathComponent(
+        "Capture d?ecran . 202 6-02-18 à 09.01.44.png"
+    )
+    let imageData = try #require(Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    ))
+    try imageData.write(to: physicalURL)
+    let receivedAt = Date(timeIntervalSince1970: 1_772_000_000)
+    let shadow = IndexedMailAttachmentCandidate(
+        messageIdentifier: "mail@example.com",
+        localIdentifier: "4119",
+        sender: "Lili <lili@example.com>",
+        subject: "Fwd: Tempête Nils",
+        preview: "",
+        receivedAt: receivedAt,
+        accountName: "Google",
+        mailboxName: "All Mail",
+        attachmentIdentifier: "1.2.2",
+        attachmentName: "Capture d_ecran . 2026-02-18 a 09.01.44.png",
+        MIMEType: "image/png",
+        sizeBytes: 0,
+        kind: .image
+    )
+    let physical = IndexedMailAttachmentCandidate(
+        messageIdentifier: "mail@example.com",
+        localIdentifier: "4119",
+        sender: "Lili <lili@example.com>",
+        subject: "Fwd: Tempête Nils",
+        preview: "",
+        receivedAt: receivedAt,
+        accountName: "Google",
+        mailboxName: "All Mail",
+        attachmentIdentifier: "file",
+        attachmentName: physicalURL.lastPathComponent,
+        MIMEType: "image/png",
+        sizeBytes: Int64(imageData.count),
+        kind: .image,
+        sourcePath: physicalURL.path
+    )
+
+    let result = MailResultDeduplicator.collapseShadowAttachments([shadow, physical])
+
+    #expect(result == [physical])
 }
 
 @Test("A stale Trash attachment resolves to the surviving local email copy")

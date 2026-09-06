@@ -3,6 +3,22 @@ import Foundation
 
 enum PersistentAttachmentStore {
     static let retentionInterval: TimeInterval = 7 * 24 * 60 * 60
+    static let defaultSizeLimitGigabytes = 1.0
+    static let minimumSizeLimitGigabytes = 0.25
+    static let maximumSizeLimitGigabytes = 100.0
+    private static let sizeLimitDefaultsKey = "MichelMailsOriginalCacheLimitGB"
+
+    static var configuredSizeLimitGigabytes: Double {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: sizeLimitDefaultsKey) != nil else {
+            return defaultSizeLimitGigabytes
+        }
+        return clampedGigabytes(defaults.double(forKey: sizeLimitDefaultsKey))
+    }
+
+    static func setConfiguredSizeLimitGigabytes(_ value: Double) {
+        UserDefaults.standard.set(clampedGigabytes(value), forKey: sizeLimitDefaultsKey)
+    }
 
     static func existingOriginalURL(
         for candidate: IndexedMailAttachmentCandidate,
@@ -85,7 +101,8 @@ enum PersistentAttachmentStore {
 
     static func cleanupExpired(
         now: Date = Date(),
-        rootDirectory: URL? = nil
+        rootDirectory: URL? = nil,
+        maximumBytes: Int64? = nil
     ) throws {
         let root = try rootDirectory ?? defaultRootDirectory()
         guard FileManager.default.fileExists(atPath: root.path) else { return }
@@ -103,6 +120,55 @@ enum PersistentAttachmentStore {
                   let modifiedAt = values?.contentModificationDate,
                   modifiedAt < cutoff else { continue }
             try? FileManager.default.removeItem(at: URL)
+        }
+        try enforceSizeLimit(
+            rootDirectory: root,
+            maximumBytes: maximumBytes
+        )
+    }
+
+    static func enforceSizeLimit(
+        rootDirectory: URL? = nil,
+        maximumBytes: Int64? = nil,
+        preserving preservedURL: URL? = nil
+    ) throws {
+        let root = try rootDirectory ?? defaultRootDirectory()
+        guard FileManager.default.fileExists(atPath: root.path) else { return }
+        let limit = max(0, maximumBytes ?? configuredSizeLimitBytes)
+        let URLs = try FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [
+                .isRegularFileKey,
+                .fileSizeKey,
+                .contentModificationDateKey
+            ],
+            options: [.skipsHiddenFiles]
+        )
+        var entries = URLs.compactMap { URL -> (URL, Int64, Date)? in
+            guard let values = try? URL.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .fileSizeKey,
+                .contentModificationDateKey
+            ]), values.isRegularFile == true else { return nil }
+            return (
+                URL,
+                Int64(values.fileSize ?? 0),
+                values.contentModificationDate ?? .distantPast
+            )
+        }
+        var total = entries.reduce(Int64(0)) { $0 + $1.1 }
+        guard total > limit else { return }
+        entries.sort { $0.2 < $1.2 }
+        for entry in entries where total > limit {
+            if let preservedURL, entry.0.standardizedFileURL == preservedURL.standardizedFileURL {
+                continue
+            }
+            do {
+                try FileManager.default.removeItem(at: entry.0)
+                total -= entry.1
+            } catch {
+                continue
+            }
         }
     }
 
@@ -122,5 +188,14 @@ enum PersistentAttachmentStore {
         )
         .appendingPathComponent("com.michelos.michelmails", isDirectory: true)
         .appendingPathComponent("Temporary Originals", isDirectory: true)
+    }
+
+    private static var configuredSizeLimitBytes: Int64 {
+        Int64(configuredSizeLimitGigabytes * 1_000_000_000)
+    }
+
+    private static func clampedGigabytes(_ value: Double) -> Double {
+        min(max(value.isFinite ? value : defaultSizeLimitGigabytes, minimumSizeLimitGigabytes),
+            maximumSizeLimitGigabytes)
     }
 }

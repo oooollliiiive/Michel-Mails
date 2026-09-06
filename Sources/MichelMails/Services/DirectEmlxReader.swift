@@ -8,6 +8,7 @@ struct DirectEmlxAttachment: Equatable, Sendable {
 }
 
 struct DirectEmlxMessage: Equatable, Sendable {
+    let messageIdentifier: String
     let body: String
     let attachments: [DirectEmlxAttachment]
 }
@@ -37,6 +38,7 @@ enum DirectEmlxReader {
         let body = (plain ?? HTML.map(stripHTML) ?? "")
             .replacingOccurrences(of: "\u{0000}", with: "")
         return DirectEmlxMessage(
+            messageIdentifier: normalizedMessageIdentifier(root.headers["message-id"] ?? ""),
             body: body,
             attachments: attachmentParts(in: root).map { part in
                 DirectEmlxAttachment(
@@ -47,6 +49,14 @@ enum DirectEmlxReader {
                 )
             }
         )
+    }
+
+    private static func normalizedMessageIdentifier(_ value: String) -> String {
+        var value = decodeHeader(value)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("<") { value.removeFirst() }
+        if value.hasSuffix(">") { value.removeLast() }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func extractAttachment(

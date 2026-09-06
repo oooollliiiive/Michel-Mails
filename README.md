@@ -43,10 +43,11 @@ Le MVP comprend :
 - le glisser-déposer natif d’un ou plusieurs originaux vers le Finder, Photoshop ou une autre application, sans déplacer la fenêtre de Michel Mails ;
 - le copier-coller, l’enregistrement d’un ou plusieurs fichiers et l’ouverture de leur email d’origine ;
 - le tag Finder automatique `From Email` sur chaque fichier enregistré, y compris lorsqu’une copie identique existe déjà dans le dossier choisi ;
-- la date de chaque téléchargement inscrite dans `com.michelos.downloaded-at` et dans la date de modification du fichier, remise à l’heure courante lorsque le même fichier est redemandé, tandis que `com.michelos.email-received-at` conserve la date de l’email pour reconnaître les doublons ;
+- la date d’origine de l’email conservée comme date de modification du fichier, et la date de téléchargement enregistrée séparément dans `com.michelos.downloaded-at`, remise à l’heure courante lorsque le même fichier est redemandé ;
+- une identité stable email–pièce jointe enregistrée dans `com.michelos.email-attachment-id`, afin de reconnaître une nouvelle demande du même fichier même si son chemin local ou son nom de copie a changé ;
 - une préparation automatique des vignettes : les fichiers locaux sont traités en parallèle et les pièces jointes manquantes sont demandées à Mail sans clic ;
 - des récupérations auprès de Mail toujours priorisées du fichier le plus récent au plus ancien ;
-- un bouton `Boost Downloads` dans le haut de la colonne, désactivé à chaque lancement, qui autorise jusqu’à cinq téléchargements simultanés au lieu d’un seul ;
+- un bouton `Boost Downloads` dans le haut de la colonne, désactivé à chaque lancement, qui autorise jusqu’à cinq téléchargements simultanés au lieu d’un seul et emploie des délais adaptés à cette charge ;
 - un bouton contextuel `Download Now` pour placer immédiatement les fichiers sélectionnés en tête de la file, les plus récents en premier ;
 - `Download Now` interrompt proprement les transferts moins prioritaires, lance réellement la sélection choisie et conserve cette priorité pendant sa tentative automatique ;
 - la fin d’une pièce jointe ancienne ne fait plus remonter automatiquement toutes les autres pièces jointes de son email devant les fichiers récents ;
@@ -55,16 +56,21 @@ Le MVP comprend :
 - un compteur de téléchargements terminés conservé dans la colonne même après la disparition des lignes réussies, et les contrôles `Stop`/`Resume` toujours visibles dans sa partie supérieure lorsqu’ils sont utiles ;
 - des vignettes persistantes conservées indépendamment des originaux et réutilisées aux lancements suivants ;
 - un cache mémoire des vignettes déjà affichées, pour éviter le bref retour d’un indicateur de téléchargement pendant le défilement ;
-- un cache temporaire des originaux conservé pendant 7 jours après leur dernière utilisation, afin de ne pas redemander plusieurs fois le même fichier à Mail ;
+- un cache temporaire des originaux conservé pendant 7 jours après leur dernière utilisation, plafonné par défaut à 1 GB et réglable dans les paramètres ; les fichiers les moins récemment utilisés sont supprimés en premier, sans toucher aux vignettes ni à `Desktop/Files from Mails` ;
+- les fichiers déjà présents localement sont copiés en parallèle, sans délai imposé entre deux copies, tandis que les demandes qui sollicitent réellement Mail gardent leur régulation séparée ;
+- les fichiers visibles dans la portion courante de la grille passent automatiquement devant les éléments hors écran dans la file de préparation ;
 - le refus systématique des fichiers vides ou incomplets avant toute copie ;
 - une colonne `Downloads` compacte intégrée à droite de la fenêtre principale, ouverte automatiquement, refermable et consultable à la demande, ainsi qu’une destination commune `Desktop/Files from Mails`, directement visible par Michel OS ;
 - la disparition automatique d’une ligne de téléchargement réussi après deux secondes, tandis que les erreurs restent visibles ;
 - un bouton temporaire de diagnostic `Reset Thumbnails` placé dans la barre principale : toutes les cartes sont vidées immédiatement, la file est interrompue, l’ensemble des vignettes, originaux temporaires, téléchargements incomplets et anciens fichiers de grille du cache privé est supprimé, puis toute la grille est relancée sans toucher aux fichiers du Bureau ;
 - une ouverture d’email qui utilise d’abord son fichier local indexé, avec un état visible `Opening…` et un résultat explicite dans la grille ;
-- la réparation automatique d’une référence devenue obsolète après le déplacement ou la suppression d’un email : une copie locale compatible de la même pièce jointe est utilisée, sinon la carte morte est retirée ;
+- la réparation automatique d’une référence devenue obsolète après le déplacement ou la suppression d’un email : l’identifiant RFC durable est récupéré pendant le scan et l’ouverture ou le téléchargement peut retrouver le message par expéditeur, objet et minute de réception ; une copie locale compatible de la même pièce jointe est utilisée, sinon la carte morte est retirée ;
+- la fusion des pièces jointes fantômes de zéro octet avec leur véritable fichier téléchargé, en faisant correspondre leur position MIME puis leur nom normalisé ;
 - la fermeture automatique de la colonne `Downloads` lorsque la grille est fermée ;
 - la fusion des anciennes et nouvelles identités d’un même email et la lecture correcte des noms de pièces jointes contenant un point-virgule ;
-- une grille horizontale qui répond aussi à la molette verticale d’une souris classique ;
+- une grille horizontale qui répond aussi à la molette verticale d’une souris classique, avec sélection de plage par Maj-clic qui active automatiquement `Select Files` ;
+- une barre d’actions animée placée au-dessus de la sélection quand l’espace le permet, ou sous la vignette sélectionnée sur la première ligne afin de ne jamais masquer le fichier ;
+- une fenêtre toujours contrainte à la zone visible de macOS, en modes liste et grille, sans passer sous le Dock ni sous la barre des menus ;
 - une confirmation avant de copier des images dans un dossier ;
 - le stockage local de la clé API dans un fichier privé accessible uniquement à l’utilisateur ;
 - la migration automatique de l’ancienne entrée du trousseau afin d’éviter une demande de mot de passe après chaque compilation locale.

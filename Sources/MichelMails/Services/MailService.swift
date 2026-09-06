@@ -108,9 +108,11 @@ final class MailService {
                     identifier,
                     message.reference.localIdentifier,
                     message.reference.accountName,
-                    message.reference.mailboxName
-                ],
-                timeout: 8
+                    message.reference.mailboxName,
+                    MailAttachmentIdentity.senderAddress(in: message.sender),
+                    message.subject
+                ] + MailAttachmentIdentity.mailDateArguments(message.receivedAt),
+                timeout: 20
             )
             if output.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
                 return
@@ -276,6 +278,13 @@ final class MailService {
         set targetLocalIdentifier to item 2 of argv
         set targetAccountName to item 3 of argv
         set targetMailboxName to item 4 of argv
+        set targetSenderAddress to item 5 of argv
+        set targetSubject to item 6 of argv
+        set targetYear to item 7 of argv as integer
+        set targetMonth to item 8 of argv as integer
+        set targetDay to item 9 of argv as integer
+        set targetHour to item 10 of argv as integer
+        set targetMinute to item 11 of argv as integer
 
         tell application "Mail"
             activate
@@ -305,6 +314,27 @@ final class MailService {
                     if my openMessageInMailbox(contents of aMailbox, targetMessageIdentifier, targetLocalIdentifier) then return "1"
                 end repeat
             end repeat
+
+            -- Mail may evict or move its local .emlx file and change its local
+            -- row ID. Recover the same email from durable visible metadata.
+            if targetSubject is not "" then
+                if targetMailboxName is not "" then
+                    repeat with anAccount in accountCandidates
+                        repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
+                            try
+                                if (name of aMailbox as text) is targetMailboxName then
+                                    if my openMessageByMetadata(contents of aMailbox, targetSenderAddress, targetSubject, targetYear, targetMonth, targetDay, targetHour, targetMinute) then return "1"
+                                end if
+                            end try
+                        end repeat
+                    end repeat
+                end if
+                repeat with anAccount in accountCandidates
+                    repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
+                        if my openMessageByMetadata(contents of aMailbox, targetSenderAddress, targetSubject, targetYear, targetMonth, targetDay, targetHour, targetMinute) then return "1"
+                    end repeat
+                end repeat
+            end if
         end tell
         return "0"
     end run
@@ -333,6 +363,38 @@ final class MailService {
         end tell
         return false
     end openMessageInMailbox
+
+    on openMessageByMetadata(aMailbox, targetSenderAddress, targetSubject, targetYear, targetMonth, targetDay, targetHour, targetMinute)
+        tell application "Mail"
+            try
+                set messageCandidates to every message of aMailbox whose subject is targetSubject
+                repeat with aMessage in messageCandidates
+                    set senderMatches to targetSenderAddress is ""
+                    if not senderMatches then
+                        try
+                            set senderMatches to (sender of aMessage as text) contains targetSenderAddress
+                        end try
+                    end if
+                    if senderMatches and my messageDateMatches(contents of aMessage, targetYear, targetMonth, targetDay, targetHour, targetMinute) then
+                        my openFoundMessage(contents of aMessage)
+                        return true
+                    end if
+                end repeat
+            end try
+        end tell
+        return false
+    end openMessageByMetadata
+
+    on messageDateMatches(aMessage, targetYear, targetMonth, targetDay, targetHour, targetMinute)
+        if targetYear is 0 then return true
+        tell application "Mail"
+            try
+                set messageDate to date received of aMessage
+                return (year of messageDate as integer) is targetYear and (month of messageDate as integer) is targetMonth and (day of messageDate as integer) is targetDay and (hours of messageDate as integer) is targetHour and (minutes of messageDate as integer) is targetMinute
+            end try
+        end tell
+        return false
+    end messageDateMatches
 
     on openFoundMessage(aMessage)
         tell application "Mail"

@@ -128,11 +128,39 @@ func desktopDuplicateDetection() throws {
     )
     #expect(refreshedDownloadDate > oldDownloadDate)
     let refreshedModificationDate = try #require(
-        firstSave.savedURLs[0]
+        URL(fileURLWithPath: firstSave.savedURLs[0].path)
             .resourceValues(forKeys: [.contentModificationDateKey])
             .contentModificationDate
     )
-    #expect(abs(refreshedModificationDate.timeIntervalSince(refreshedDownloadDate)) < 1.1)
+    #expect(abs(refreshedModificationDate.timeIntervalSince(receivedAt)) < 1.1)
+    #expect(abs(refreshedDownloadDate.timeIntervalSince(receivedAt)) > 1.1)
+}
+
+@Test("Export metadata keeps email date and a stable attachment identity")
+func exportedAttachmentMetadata() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fileURL = directory.appendingPathComponent("mail-photo.jpg")
+    try Data([1, 2, 3]).write(to: fileURL)
+    let receivedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let downloadedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+    try EmailDownloadMetadata.markDownloaded(
+        fileURL,
+        emailReceivedAt: receivedAt,
+        sourceIdentity: "message:stable|part:1.2",
+        downloadedAt: downloadedAt
+    )
+
+    #expect(EmailDownloadMetadata.downloadedAt(for: fileURL) == downloadedAt)
+    #expect(EmailDownloadMetadata.emailReceivedAt(for: fileURL) == receivedAt)
+    #expect(EmailDownloadMetadata.sourceIdentity(for: fileURL) == "message:stable|part:1.2")
+    let modifiedAt = try #require(
+        fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    )
+    #expect(abs(modifiedAt.timeIntervalSince(receivedAt)) < 1.1)
 }
 
 @Test("Long email ages use years plus remaining days")
@@ -339,6 +367,38 @@ func downloadBoostIsOptIn() {
     #expect(manager.simultaneousMailDownloadLimit == 5)
 }
 
+@Test("Visible grid files move ahead of offscreen queued files")
+@MainActor
+func visibleGridDownloadsArePrioritized() {
+    func candidate(_ name: String, timestamp: TimeInterval) -> IndexedMailAttachmentCandidate {
+        IndexedMailAttachmentCandidate(
+            messageIdentifier: "\(name)-message",
+            localIdentifier: name,
+            sender: "Michel",
+            subject: name,
+            preview: "",
+            receivedAt: Date(timeIntervalSince1970: timestamp),
+            accountName: "Mail",
+            mailboxName: "Inbox",
+            attachmentIdentifier: "1.2",
+            attachmentName: name,
+            MIMEType: "image/jpeg",
+            sizeBytes: 12_000,
+            kind: .image,
+            sourcePath: "/missing/\(name)"
+        )
+    }
+    let newest = candidate("newest.jpg", timestamp: 300)
+    let visible = candidate("visible.jpg", timestamp: 100)
+    let middle = candidate("middle.jpg", timestamp: 200)
+    let manager = AttachmentDownloadManager(startsTransfersAutomatically: false)
+    manager.prepareThumbnails([newest, middle, visible])
+
+    manager.prioritizeVisible([visible])
+
+    #expect(manager.items.first?.candidate.attachmentName == "visible.jpg")
+}
+
 @Test("Download Now keeps selected downloads newest first")
 @MainActor
 func selectedDownloadsArePrioritizedNewestFirst() {
@@ -430,4 +490,32 @@ func temporaryOriginalRetention() throws {
     try PersistentAttachmentStore.cleanupExpired(rootDirectory: cacheRoot)
 
     #expect(!FileManager.default.fileExists(atPath: cachedURL.path))
+}
+
+@Test("Original cache evicts least recently used files over its size limit")
+func temporaryOriginalSizeLimit() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let oldURL = root.appendingPathComponent("old.bin")
+    let newURL = root.appendingPathComponent("new.bin")
+    try Data(repeating: 1, count: 600).write(to: oldURL)
+    try Data(repeating: 2, count: 600).write(to: newURL)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: 100)],
+        ofItemAtPath: oldURL.path
+    )
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: 200)],
+        ofItemAtPath: newURL.path
+    )
+
+    try PersistentAttachmentStore.enforceSizeLimit(
+        rootDirectory: root,
+        maximumBytes: 700
+    )
+
+    #expect(!FileManager.default.fileExists(atPath: oldURL.path))
+    #expect(FileManager.default.fileExists(atPath: newURL.path))
 }

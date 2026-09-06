@@ -85,8 +85,10 @@ enum AttachmentMaterializer {
                 candidate.localIdentifier,
                 candidate.attachmentIdentifier,
                 candidate.attachmentName,
-                destination.path
-            ],
+                destination.path,
+                MailAttachmentIdentity.senderAddress(in: candidate.sender),
+                candidate.subject
+            ] + MailAttachmentIdentity.mailDateArguments(candidate.receivedAt),
             timeout: mailDownloadTimeout
         )
         let result = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -268,6 +270,13 @@ enum AttachmentMaterializer {
         set targetAttachmentIdentifier to item 5 of argv
         set targetAttachmentName to item 6 of argv
         set destinationPath to item 7 of argv
+        set targetSenderAddress to item 8 of argv
+        set targetSubject to item 9 of argv
+        set targetYear to item 10 of argv as integer
+        set targetMonth to item 11 of argv as integer
+        set targetDay to item 12 of argv as integer
+        set targetHour to item 13 of argv as integer
+        set targetMinute to item 14 of argv as integer
 
         tell application "Mail"
             set accountCandidates to every account
@@ -294,6 +303,28 @@ enum AttachmentMaterializer {
                     if attemptResult is not "0" then return attemptResult
                 end repeat
             end repeat
+
+            -- Recover messages whose Mail cache path or local row ID changed.
+            if targetSubject is not "" then
+                if targetMailboxName is not "" then
+                    repeat with anAccount in accountCandidates
+                        repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
+                            try
+                                if (name of aMailbox as text) is targetMailboxName then
+                                    set attemptResult to my saveAttachmentByMetadata(contents of aMailbox, targetSenderAddress, targetSubject, targetYear, targetMonth, targetDay, targetHour, targetMinute, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
+                                    if attemptResult is not "0" then return attemptResult
+                                end if
+                            end try
+                        end repeat
+                    end repeat
+                end if
+                repeat with anAccount in accountCandidates
+                    repeat with aMailbox in my flattenedMailboxes(contents of anAccount)
+                        set attemptResult to my saveAttachmentByMetadata(contents of aMailbox, targetSenderAddress, targetSubject, targetYear, targetMonth, targetDay, targetHour, targetMinute, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
+                        if attemptResult is not "0" then return attemptResult
+                    end repeat
+                end repeat
+            end if
         end tell
         return "0"
     end run
@@ -339,6 +370,65 @@ enum AttachmentMaterializer {
         end tell
         return "0"
     end saveMatchingAttachment
+
+    on saveAttachmentByMetadata(aMailbox, targetSenderAddress, targetSubject, targetYear, targetMonth, targetDay, targetHour, targetMinute, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
+        tell application "Mail"
+            try
+                set messageCandidates to every message of aMailbox whose subject is targetSubject
+                repeat with aMessage in messageCandidates
+                    set senderMatches to targetSenderAddress is ""
+                    if not senderMatches then
+                        try
+                            set senderMatches to (sender of aMessage as text) contains targetSenderAddress
+                        end try
+                    end if
+                    if senderMatches and my messageDateMatches(contents of aMessage, targetYear, targetMonth, targetDay, targetHour, targetMinute) then
+                        set attemptResult to my saveAttachmentFromMessage(contents of aMessage, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
+                        if attemptResult is not "0" then return attemptResult
+                    end if
+                end repeat
+            end try
+        end tell
+        return "0"
+    end saveAttachmentByMetadata
+
+    on saveAttachmentFromMessage(aMessage, targetAttachmentIdentifier, targetAttachmentName, destinationPath)
+        tell application "Mail"
+            try
+                repeat with anAttachment in every mail attachment of aMessage
+                    set attachmentMatches to false
+                    if targetAttachmentIdentifier is not "" and targetAttachmentIdentifier does not start with "index-" then
+                        try
+                            set attachmentMatches to (id of anAttachment as text) is targetAttachmentIdentifier
+                        end try
+                    end if
+                    if not attachmentMatches and targetAttachmentName is not "" then
+                        try
+                            set attachmentMatches to (name of anAttachment as text) is targetAttachmentName
+                        end try
+                    end if
+                    if attachmentMatches then
+                        save anAttachment in POSIX file destinationPath
+                        return "1"
+                    end if
+                end repeat
+            on error errorMessage number errorNumber
+                return "ERROR|" & errorNumber & " · " & errorMessage
+            end try
+        end tell
+        return "0"
+    end saveAttachmentFromMessage
+
+    on messageDateMatches(aMessage, targetYear, targetMonth, targetDay, targetHour, targetMinute)
+        if targetYear is 0 then return true
+        tell application "Mail"
+            try
+                set messageDate to date received of aMessage
+                return (year of messageDate as integer) is targetYear and (month of messageDate as integer) is targetMonth and (day of messageDate as integer) is targetDay and (hours of messageDate as integer) is targetHour and (minutes of messageDate as integer) is targetMinute
+            end try
+        end tell
+        return false
+    end messageDateMatches
 
     on flattenedMailboxes(aContainer)
         set collectedMailboxes to {}

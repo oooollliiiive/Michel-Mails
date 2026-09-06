@@ -192,11 +192,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
         let mainWidth = min(Self.expandedMainWidth, availableWidth - sidebarWidth)
         let targetContentWidth = mainWidth + sidebarWidth
-        let preferredHeight = min(1_020, (visibleFrame?.height ?? 1_020) - 12)
-        let targetContentHeight = max(Self.expandedContentHeight, preferredHeight)
+        let availableContentHeight = max(
+            Self.promptBaseHeight,
+            (visibleFrame?.height ?? 1_020) - 12
+        )
+        let targetContentHeight = min(1_020, availableContentHeight)
         panel.contentMinSize = NSSize(
             width: Self.promptWidth + sidebarWidth,
-            height: Self.expandedContentHeight
+            height: min(Self.expandedContentHeight, availableContentHeight)
         )
         panel.contentMaxSize = NSSize(width: 10_000, height: 10_000)
 
@@ -263,8 +266,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func setPanelFrame(_ panel: NSPanel, frame: NSRect, animated: Bool) {
         isAdjustingPanelFrame = true
-        panel.setFrame(frame, display: true, animate: animated)
+        panel.setFrame(constrainedFrame(frame, for: panel), display: true, animate: animated)
         isAdjustingPanelFrame = false
+    }
+
+    private func constrainedFrame(_ requestedFrame: NSRect, for panel: NSWindow) -> NSRect {
+        let screen = panel.screen
+            ?? NSScreen.screens.max(by: {
+                $0.frame.intersection(requestedFrame).area < $1.frame.intersection(requestedFrame).area
+            })
+            ?? NSScreen.main
+        guard let visibleFrame = screen?.visibleFrame else { return requestedFrame }
+        var frame = requestedFrame
+        frame.size.width = min(frame.width, visibleFrame.width)
+        frame.size.height = min(frame.height, visibleFrame.height)
+        frame.origin.x = min(
+            max(frame.minX, visibleFrame.minX),
+            visibleFrame.maxX - frame.width
+        )
+        frame.origin.y = min(
+            max(frame.minY, visibleFrame.minY),
+            visibleFrame.maxY - frame.height
+        )
+        return frame
     }
 
     private func restorePromptPosition(_ panel: NSPanel) {
@@ -294,11 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         var frame = panel.frame
         frame.origin.x = savedX
         frame.origin.y = savedTop - frame.height
-        if let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
-            frame.origin.x = min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - frame.width)
-            frame.origin.y = min(max(frame.minY, visibleFrame.minY), visibleFrame.maxY - frame.height)
-        }
-        panel.setFrame(frame, display: false)
+        panel.setFrame(constrainedFrame(frame, for: panel), display: false)
     }
 
     private func rememberPromptPosition() {
@@ -338,4 +358,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
               window === panel else { return }
         rememberPromptPosition()
     }
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        guard sender === panel,
+              let visibleFrame = sender.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
+            return frameSize
+        }
+        return NSSize(
+            width: min(frameSize.width, visibleFrame.width),
+            height: min(frameSize.height, visibleFrame.height)
+        )
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard !isAdjustingPanelFrame,
+              let panel,
+              let window = notification.object as? NSWindow,
+              window === panel else { return }
+        let constrained = constrainedFrame(window.frame, for: window)
+        guard constrained != window.frame else { return }
+        setPanelFrame(panel, frame: constrained, animated: false)
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard let panel,
+              let window = notification.object as? NSWindow,
+              window === panel else { return }
+        setPanelFrame(panel, frame: window.frame, animated: false)
+    }
+}
+
+private extension NSRect {
+    var area: CGFloat { max(0, width) * max(0, height) }
 }

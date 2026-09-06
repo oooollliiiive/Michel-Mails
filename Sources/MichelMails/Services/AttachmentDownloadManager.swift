@@ -13,7 +13,7 @@ final class AttachmentDownloadManager: ObservableObject {
 
     var onPresentDownloads: (() -> Void)?
 
-    private let maximumConcurrentTransfers = 5
+    private let maximumConcurrentLocalTransfers = 8
     private let maximumAutomaticMailAttempts = 2
     private let startsTransfersAutomatically: Bool
     private var queue: [String] = []
@@ -21,12 +21,14 @@ final class AttachmentDownloadManager: ObservableObject {
     private var activeMailKeys: Set<String> = []
     private var highPriorityKeys: Set<String> = []
     private var downloadNowKeys: Set<String> = []
+    private var visiblePriorityKeys: Set<String> = []
     private var deferredRetryKeys: Set<String> = []
     private var mailCooldown = false
     private var presentedAutomaticDownloads = false
     private var finishedRowTasks: [String: Task<Void, Never>] = [:]
     private var transferTasks: [String: Task<Void, Never>] = [:]
     private var deferredRetryTasks: [String: Task<Void, Never>] = [:]
+    private var cacheCleanupTask: Task<Void, Never>?
     private var mailAttemptCounts: [String: Int] = [:]
     private var transferGeneration = 0
     private var lastPreparedCandidates: [IndexedMailAttachmentCandidate] = []
@@ -57,6 +59,9 @@ final class AttachmentDownloadManager: ObservableObject {
                 if leftWasRequestedNow != rightWasRequestedNow {
                     return leftWasRequestedNow
                 }
+                let leftIsVisible = visiblePriorityKeys.contains($0.id)
+                let rightIsVisible = visiblePriorityKeys.contains($1.id)
+                if leftIsVisible != rightIsVisible { return leftIsVisible }
                 return ($0.candidate.receivedAt ?? .distantPast) >
                     ($1.candidate.receivedAt ?? .distantPast)
             }
@@ -349,6 +354,14 @@ final class AttachmentDownloadManager: ObservableObject {
         pumpQueue()
     }
 
+    func prioritizeVisible(_ candidates: [IndexedMailAttachmentCandidate]) {
+        let updated = Set(candidates.map(\.stableKey))
+        guard updated != visiblePriorityKeys else { return }
+        visiblePriorityKeys = updated
+        objectWillChange.send()
+        pumpQueue()
+    }
+
     func stopAll() {
         guard !isPaused else { return }
         isPaused = true
@@ -360,6 +373,8 @@ final class AttachmentDownloadManager: ObservableObject {
         deferredRetryTasks.values.forEach { $0.cancel() }
         deferredRetryTasks.removeAll()
         deferredRetryKeys.removeAll()
+        cacheCleanupTask?.cancel()
+        cacheCleanupTask = nil
         activeKeys.removeAll()
         activeMailKeys.removeAll()
         mailCooldown = false
@@ -445,6 +460,8 @@ final class AttachmentDownloadManager: ObservableObject {
         deferredRetryTasks.values.forEach { $0.cancel() }
         deferredRetryTasks.removeAll()
         deferredRetryKeys.removeAll()
+        cacheCleanupTask?.cancel()
+        cacheCleanupTask = nil
         mailAttemptCounts.removeAll()
         completedCount = 0
         isPaused = false
@@ -453,6 +470,7 @@ final class AttachmentDownloadManager: ObservableObject {
         activeMailKeys.removeAll()
         highPriorityKeys.removeAll()
         downloadNowKeys.removeAll()
+        visiblePriorityKeys.removeAll()
         mailCooldown = false
         records.removeAll()
         orderedKeys.removeAll()
@@ -557,11 +575,15 @@ final class AttachmentDownloadManager: ObservableObject {
 
     private func pumpQueue() {
         guard startsTransfersAutomatically, !isPaused else { return }
-        while activeKeys.count < maximumConcurrentTransfers, !queue.isEmpty {
+        while activeKeys.count < maximumConcurrentLocalTransfers + simultaneousMailDownloadLimit,
+              !queue.isEmpty {
+            let activeLocalCount = activeKeys.count - activeMailKeys.count
             let eligibleIndices = queue.indices.filter { index in
                 guard let record = records[queue[index]] else { return false }
-                return !record.allowsMailDownload ||
-                    (activeMailKeys.count < simultaneousMailDownloadLimit && !mailCooldown)
+                if transferRequiresAppleMail(record) {
+                    return activeMailKeys.count < simultaneousMailDownloadLimit && !mailCooldown
+                }
+                return activeLocalCount < maximumConcurrentLocalTransfers
             }
             guard !eligibleIndices.isEmpty else { return }
             let regularIndices = eligibleIndices.filter {
@@ -571,12 +593,17 @@ final class AttachmentDownloadManager: ObservableObject {
             let downloadNowPool = normalPool.filter {
                 downloadNowKeys.contains(queue[$0])
             }
+            let visiblePool = normalPool.filter {
+                visiblePriorityKeys.contains(queue[$0])
+            }
             let priorityPool = normalPool.filter {
                 highPriorityKeys.contains(queue[$0])
             }
             let selectionPool = !downloadNowPool.isEmpty
                 ? downloadNowPool
-                : (priorityPool.isEmpty ? normalPool : priorityPool)
+                : (!visiblePool.isEmpty
+                    ? visiblePool
+                    : (priorityPool.isEmpty ? normalPool : priorityPool))
             let selectedIndex = selectionPool.max { left, right in
                     let leftDate = records[queue[left]]?.candidate.receivedAt ?? .distantPast
                     let rightDate = records[queue[right]]?.candidate.receivedAt ?? .distantPast
@@ -587,7 +614,7 @@ final class AttachmentDownloadManager: ObservableObject {
             highPriorityKeys.remove(key)
             deferredRetryKeys.remove(key)
             guard var record = records[key], !activeKeys.contains(key) else { continue }
-            let attemptUsesAppleMail = record.allowsMailDownload
+            let attemptUsesAppleMail = transferRequiresAppleMail(record)
             record.state = .downloading
             record.activeRoute = attemptUsesAppleMail ? .appleMail : .local
             records[key] = record
@@ -601,7 +628,12 @@ final class AttachmentDownloadManager: ObservableObject {
             } else {
                 mailAttempt = 0
             }
-            let mailDownloadTimeout: TimeInterval = mailAttempt <= 1 ? 8 : 20
+            let mailDownloadTimeout: TimeInterval
+            if boostDownloadsEnabled {
+                mailDownloadTimeout = mailAttempt <= 1 ? 30 : 60
+            } else {
+                mailDownloadTimeout = mailAttempt <= 1 ? 8 : 20
+            }
             let generation = transferGeneration
 
             let task = Task { [weak self] in
@@ -609,7 +641,10 @@ final class AttachmentDownloadManager: ObservableObject {
                     let existingOriginal = PersistentAttachmentStore.existingOriginalURL(
                         for: candidate
                     )
-                    let temporaryURL = existingOriginal == nil
+                    let directlyAvailable = AttachmentMaterializer.directlyAvailableFile(
+                        for: candidate
+                    )
+                    let temporaryURL = existingOriginal == nil && directlyAvailable == nil
                         ? try AttachmentMaterializer.temporaryDestination(for: candidate)
                         : nil
                     defer {
@@ -618,6 +653,8 @@ final class AttachmentDownloadManager: ObservableObject {
                     let materializedURL: URL
                     if let existingOriginal {
                         materializedURL = existingOriginal
+                    } else if let directlyAvailable {
+                        materializedURL = directlyAvailable
                     } else if let temporaryURL {
                         try await AttachmentMaterializer.materialize(
                             candidate,
@@ -633,6 +670,7 @@ final class AttachmentDownloadManager: ObservableObject {
                         key: key,
                         candidate: candidate,
                         materializedURL: materializedURL,
+                        shouldStoreOriginal: temporaryURL != nil,
                         generation: generation
                     )
                 } catch {
@@ -652,6 +690,7 @@ final class AttachmentDownloadManager: ObservableObject {
         key: String,
         candidate: IndexedMailAttachmentCandidate,
         materializedURL: URL,
+        shouldStoreOriginal: Bool,
         generation: Int
     ) async {
         guard generation == transferGeneration else { return }
@@ -662,7 +701,7 @@ final class AttachmentDownloadManager: ObservableObject {
         }
 
         var durableURL = materializedURL
-        if record.shouldCacheOriginal || record.allowsMailDownload || record.isVisibleInDownloads {
+        if shouldStoreOriginal {
             do {
                 durableURL = try await Task.detached(priority: .utility) {
                     try PersistentAttachmentStore.store(
@@ -701,15 +740,17 @@ final class AttachmentDownloadManager: ObservableObject {
         if record.needsExport {
             do {
                 let destination = try record.exportDirectoryURL ?? Self.destinationDirectory()
-                try FileManager.default.createDirectory(
-                    at: destination,
-                    withIntermediateDirectories: true
-                )
-                let exportedURL = try AttachmentExportSaver.save(
-                    candidate,
-                    materializedURL: durableURL,
-                    to: destination
-                )
+                let exportedURL = try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(
+                        at: destination,
+                        withIntermediateDirectories: true
+                    )
+                    return try AttachmentExportSaver.save(
+                        candidate,
+                        materializedURL: durableURL,
+                        to: destination
+                    )
+                }.value
                 record.exportedURL = exportedURL
                 record.needsExport = false
             } catch {
@@ -740,6 +781,7 @@ final class AttachmentDownloadManager: ObservableObject {
         deferredRetryKeys.remove(key)
         releaseActiveTransfer(key)
         scheduleFinishedRowHiding(key)
+        if shouldStoreOriginal { scheduleCacheCleanup() }
         pumpQueue()
     }
 
@@ -844,6 +886,14 @@ final class AttachmentDownloadManager: ObservableObject {
         }
     }
 
+    private func transferRequiresAppleMail(_ record: AttachmentTransferRecord) -> Bool {
+        guard record.allowsMailDownload else { return false }
+        if PersistentAttachmentStore.existingOriginalURL(for: record.candidate) != nil {
+            return false
+        }
+        return !AttachmentMaterializer.hasLocallyAvailableSource(for: record.candidate)
+    }
+
     private func presentAutomaticDownloadsIfNeeded() {
         guard !presentedAutomaticDownloads else { return }
         presentedAutomaticDownloads = true
@@ -859,6 +909,22 @@ final class AttachmentDownloadManager: ObservableObject {
             record.isVisibleInDownloads = false
             self.records[key] = record
             self.finishedRowTasks[key] = nil
+        }
+    }
+
+    private func scheduleCacheCleanup() {
+        cacheCleanupTask?.cancel()
+        cacheCleanupTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            if !self.activeKeys.isEmpty {
+                self.scheduleCacheCleanup()
+                return
+            }
+            await Task.detached(priority: .utility) {
+                try? PersistentAttachmentStore.cleanupExpired()
+            }.value
+            self.cacheCleanupTask = nil
         }
     }
 
@@ -888,6 +954,9 @@ final class AttachmentDownloadManager: ObservableObject {
 }
 
 enum AttachmentExportSaver {
+    private static let reservationLock = NSLock()
+    private static var reservedPaths: Set<String> = []
+
     static func save(
         _ candidate: IndexedMailAttachmentCandidate,
         materializedURL: URL,
@@ -904,36 +973,69 @@ enum AttachmentExportSaver {
         let sourceValues = try materializedURL.resourceValues(forKeys: [.fileSizeKey])
         let sourceSize = Int64(sourceValues.fileSize ?? 0)
         let referenceDate = candidate.receivedAt
-        if FileManager.default.fileExists(atPath: proposedURL.path),
-           let existingSize = try? proposedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-           existingSize == 0 {
-            try FileManager.default.removeItem(at: proposedURL)
-        }
-        if DesktopFileSaver.isDuplicate(
-            at: proposedURL,
-            expectedSize: sourceSize,
-            expectedDate: referenceDate
-        ) {
-            try FinderTagger.addFromEmailTag(to: proposedURL)
-            try EmailDownloadMetadata.markDownloaded(
-                proposedURL,
-                emailReceivedAt: referenceDate
-            )
-            return proposedURL
-        }
 
-        let destination = availableURL(for: proposedURL)
-        try manager.copyItem(at: materializedURL, to: destination)
-        guard AttachmentMaterializer.isCompleteFile(at: destination, candidate: candidate) else {
-            try? manager.removeItem(at: destination)
-            throw AttachmentMaterializerError.incomplete
+        reservationLock.lock()
+        if let duplicateURL = DesktopFileSaver.duplicateURL(
+            at: proposedURL,
+            in: directory,
+            expectedSize: sourceSize,
+            expectedDate: referenceDate,
+            expectedSourceIdentity: candidate.sourceIdentity
+        ) {
+            do {
+                try FinderTagger.addFromEmailTag(to: duplicateURL)
+                try EmailDownloadMetadata.markDownloaded(
+                    duplicateURL,
+                    emailReceivedAt: referenceDate,
+                    sourceIdentity: candidate.sourceIdentity
+                )
+                reservationLock.unlock()
+                return duplicateURL
+            } catch {
+                reservationLock.unlock()
+                throw error
+            }
         }
-        try FinderTagger.addFromEmailTag(to: destination)
-        try EmailDownloadMetadata.markDownloaded(
-            destination,
-            emailReceivedAt: referenceDate
-        )
-        return destination
+        let destination = availableURL(for: proposedURL)
+        guard manager.createFile(atPath: destination.path, contents: Data()) else {
+            reservationLock.unlock()
+            throw AttachmentMaterializerError.unavailable
+        }
+        reservedPaths.insert(destination.path)
+        reservationLock.unlock()
+
+        let temporary = directory.appendingPathComponent(".\(UUID().uuidString).mail-copy")
+        do {
+            try manager.copyItem(at: materializedURL, to: temporary)
+            guard AttachmentMaterializer.isCompleteFile(at: temporary, candidate: candidate) else {
+                throw AttachmentMaterializerError.incomplete
+            }
+            reservationLock.lock()
+            do {
+                try manager.removeItem(at: destination)
+                try manager.moveItem(at: temporary, to: destination)
+                try FinderTagger.addFromEmailTag(to: destination)
+                try EmailDownloadMetadata.markDownloaded(
+                    destination,
+                    emailReceivedAt: referenceDate,
+                    sourceIdentity: candidate.sourceIdentity
+                )
+                reservedPaths.remove(destination.path)
+                reservationLock.unlock()
+                return destination
+            } catch {
+                reservedPaths.remove(destination.path)
+                reservationLock.unlock()
+                throw error
+            }
+        } catch {
+            try? manager.removeItem(at: temporary)
+            reservationLock.lock()
+            reservedPaths.remove(destination.path)
+            try? manager.removeItem(at: destination)
+            reservationLock.unlock()
+            throw error
+        }
     }
 
     private static func safeFileName(_ value: String) -> String {
@@ -946,7 +1048,8 @@ enum AttachmentExportSaver {
     }
 
     private static func availableURL(for proposedURL: URL) -> URL {
-        guard FileManager.default.fileExists(atPath: proposedURL.path) else { return proposedURL }
+        guard FileManager.default.fileExists(atPath: proposedURL.path) ||
+                reservedPaths.contains(proposedURL.path) else { return proposedURL }
         let extensionName = proposedURL.pathExtension
         let stem = proposedURL.deletingPathExtension().lastPathComponent
         var index = 2
@@ -955,7 +1058,8 @@ enum AttachmentExportSaver {
                 ? "\(stem) \(index)"
                 : "\(stem) \(index).\(extensionName)"
             let candidate = proposedURL.deletingLastPathComponent().appendingPathComponent(name)
-            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            if !FileManager.default.fileExists(atPath: candidate.path) &&
+                !reservedPaths.contains(candidate.path) { return candidate }
             index += 1
         }
     }

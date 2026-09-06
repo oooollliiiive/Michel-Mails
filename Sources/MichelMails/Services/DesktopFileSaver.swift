@@ -35,16 +35,20 @@ enum DesktopFileSaver {
                 continue
             }
             let referenceDate = item.message.receivedAt ?? sourceValues.contentModificationDate
+            let sourceIdentity = item.sourceCandidate?.sourceIdentity
 
-            if isDuplicate(
+            if let duplicateURL = duplicateURL(
                 at: proposedURL,
+                in: directory,
                 expectedSize: sourceSize,
-                expectedDate: referenceDate
+                expectedDate: referenceDate,
+                expectedSourceIdentity: sourceIdentity
             ) {
-                try FinderTagger.addFromEmailTag(to: proposedURL)
+                try FinderTagger.addFromEmailTag(to: duplicateURL)
                 try EmailDownloadMetadata.markDownloaded(
-                    proposedURL,
-                    emailReceivedAt: referenceDate
+                    duplicateURL,
+                    emailReceivedAt: referenceDate,
+                    sourceIdentity: sourceIdentity
                 )
                 duplicateCount += 1
                 continue
@@ -55,7 +59,8 @@ enum DesktopFileSaver {
             try FinderTagger.addFromEmailTag(to: destination)
             try EmailDownloadMetadata.markDownloaded(
                 destination,
-                emailReceivedAt: referenceDate
+                emailReceivedAt: referenceDate,
+                sourceIdentity: sourceIdentity
             )
             savedURLs.append(destination)
         }
@@ -70,7 +75,8 @@ enum DesktopFileSaver {
     static func isDuplicate(
         at URL: URL,
         expectedSize: Int64,
-        expectedDate: Date?
+        expectedDate: Date?,
+        expectedSourceIdentity: String? = nil
     ) -> Bool {
         guard FileManager.default.fileExists(atPath: URL.path),
               let values = try? URL.resourceValues(
@@ -80,6 +86,11 @@ enum DesktopFileSaver {
             return false
         }
 
+        if let expectedSourceIdentity, !expectedSourceIdentity.isEmpty,
+           let storedIdentity = EmailDownloadMetadata.sourceIdentity(for: URL) {
+            if storedIdentity == expectedSourceIdentity { return true }
+        }
+
         guard let expectedDate else { return true }
         let storedEmailDate = EmailDownloadMetadata.emailReceivedAt(for: URL)
             ?? values.contentModificationDate
@@ -87,6 +98,38 @@ enum DesktopFileSaver {
         // APFS stores sub-second dates, while email indexes can round to a
         // whole second. Treat those representations as the same date.
         return abs(storedEmailDate.timeIntervalSince(expectedDate)) < 1.1
+    }
+
+    static func duplicateURL(
+        at proposedURL: URL,
+        in directory: URL,
+        expectedSize: Int64,
+        expectedDate: Date?,
+        expectedSourceIdentity: String?
+    ) -> URL? {
+        if isDuplicate(
+            at: proposedURL,
+            expectedSize: expectedSize,
+            expectedDate: expectedDate,
+            expectedSourceIdentity: expectedSourceIdentity
+        ) {
+            return proposedURL
+        }
+        guard let expectedSourceIdentity, !expectedSourceIdentity.isEmpty,
+              let URLs = try? FileManager.default.contentsOfDirectory(
+                  at: directory,
+                  includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                  options: [.skipsHiddenFiles]
+              ) else { return nil }
+        return URLs.first { candidate in
+            guard candidate != proposedURL,
+                  let values = try? candidate.resourceValues(
+                      forKeys: [.isRegularFileKey, .fileSizeKey]
+                  ),
+                  values.isRegularFile == true,
+                  Int64(values.fileSize ?? -1) == expectedSize else { return false }
+            return EmailDownloadMetadata.sourceIdentity(for: candidate) == expectedSourceIdentity
+        }
     }
 
     private static func safeFileName(_ value: String) -> String {

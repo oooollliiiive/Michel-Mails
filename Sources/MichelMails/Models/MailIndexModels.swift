@@ -54,8 +54,10 @@ struct IndexedMailMessage: Equatable, Sendable {
     let attachments: [IndexedMailAttachment]
     var bodyWasScanned: Bool = true
     var sourcePath: String = ""
+    var storageKey: String = ""
 
     var key: String {
+        if !storageKey.isEmpty { return storageKey }
         if !messageIdentifier.isEmpty { return "message:\(messageIdentifier)" }
         return "local:\(accountName):\(localIdentifier)"
     }
@@ -84,6 +86,11 @@ struct IndexedMailAttachmentCandidate: Equatable, Sendable {
             ? "local:\(accountName):\(localIdentifier)"
             : "message:\(messageIdentifier)"
         return "\(messageKey)|\(attachmentIdentifier)|\(attachmentName)"
+    }
+
+    /// Stable across Mail cache moves and suitable for exported-file metadata.
+    var sourceIdentity: String {
+        MailAttachmentIdentity.sourceIdentity(for: self)
     }
 
     var message: MailMessageItem {

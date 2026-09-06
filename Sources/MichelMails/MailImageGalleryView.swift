@@ -94,8 +94,15 @@ struct MailImageGalleryView: View {
                     .background(HorizontalMouseWheelSupport())
                 }
                 .coordinateSpace(name: "MichelMailsGalleryScroll")
+                .onAppear {
+                    updateVisibleDownloadPriority(cardFrames, viewportSize: viewport.size)
+                }
+                .onChange(of: viewport.size) { size in
+                    updateVisibleDownloadPriority(cardFrames, viewportSize: size)
+                }
                 .onPreferenceChange(GalleryCardFramePreferenceKey.self) { frames in
                     cardFrames = frames
+                    updateVisibleDownloadPriority(frames, viewportSize: viewport.size)
                 }
                 .overlay {
                     if !selectedIDs.isEmpty || selectionModeEnabled {
@@ -117,6 +124,9 @@ struct MailImageGalleryView: View {
             .background(Color(nsColor: .underPageBackgroundColor))
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onDisappear {
+            downloadManager.prioritizeVisible([])
+        }
         .overlay(alignment: .bottom) {
             if let transientMessage {
                 Text(transientMessage)
@@ -339,7 +349,15 @@ struct MailImageGalleryView: View {
             max(frame.midX, halfBarWidth + 8),
             viewportSize.width - halfBarWidth - 8
         )
-        return CGPoint(x: x, y: max(topY, frame.minY - barHalfHeight - 7))
+        let preferredAbove = frame.minY - barHalfHeight - 7
+        if preferredAbove - barHalfHeight >= 5 {
+            return CGPoint(x: x, y: preferredAbove)
+        }
+        let preferredBelow = frame.maxY + barHalfHeight + 7
+        if preferredBelow + barHalfHeight <= viewportSize.height - 5 {
+            return CGPoint(x: x, y: preferredBelow)
+        }
+        return CGPoint(x: viewportSize.width / 2, y: topY)
     }
 
     private func imageCard(_ item: MailImageItem) -> some View {
@@ -456,6 +474,10 @@ struct MailImageGalleryView: View {
     }
 
     private func toggle(_ item: MailImageItem) {
+        if NSEvent.modifierFlags.contains(.shift) {
+            selectRange(through: item)
+            return
+        }
         withSelectionAnimation {
             if !selectionModeEnabled {
                 if selectedIDs == Set([item.id]) {
@@ -474,6 +496,37 @@ struct MailImageGalleryView: View {
                 selectionOrder.append(item.id)
             }
         }
+    }
+
+    private func selectRange(through item: MailImageItem) {
+        let orderedIDs = chronologicallyOrderedItems.map(\.id)
+        guard let clickedIndex = orderedIDs.firstIndex(of: item.id) else { return }
+        let anchorID = selectionOrder.last ?? selectedIDs.first
+        let anchorIndex = anchorID.flatMap { orderedIDs.firstIndex(of: $0) } ?? clickedIndex
+        let lower = min(anchorIndex, clickedIndex)
+        let upper = max(anchorIndex, clickedIndex)
+        let rangeIDs = Set(orderedIDs[lower...upper])
+        withSelectionAnimation {
+            selectionModeEnabled = true
+            selectedIDs.formUnion(rangeIDs)
+            selectionOrder.removeAll { $0 == item.id }
+            selectionOrder.append(item.id)
+        }
+    }
+
+    private func updateVisibleDownloadPriority(
+        _ frames: [UUID: CGRect],
+        viewportSize: CGSize
+    ) {
+        guard viewportSize.width > 0, viewportSize.height > 0 else { return }
+        let viewport = CGRect(origin: .zero, size: viewportSize)
+        let visibleIDs = Set(frames.compactMap { ID, frame in
+            frame.intersects(viewport) ? ID : nil
+        })
+        let candidates = chronologicallyOrderedItems.compactMap { item in
+            visibleIDs.contains(item.id) ? item.sourceCandidate : nil
+        }
+        downloadManager.prioritizeVisible(candidates)
     }
 
     private func toggleSelectionMode() {

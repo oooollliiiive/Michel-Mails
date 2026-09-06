@@ -97,10 +97,12 @@ actor DirectMailSource {
                     messageRowID: sourceRow.rowID,
                     emlxURL: emlxURL
                 )
-                var attachments = parsed.attachments.enumerated().map { index, attachment in
+                let parsedAttachments = parsed.attachments.enumerated().map { index, attachment in
                     Self.indexedAttachment(
                         DirectEmlxAttachment(
-                            identifier: "index-\(index + 1)",
+                            identifier: attachment.identifier.isEmpty
+                                ? "index-\(index + 1)"
+                                : attachment.identifier,
                             name: attachment.name,
                             MIMEType: attachment.MIMEType,
                             sizeBytes: attachment.sizeBytes
@@ -108,14 +110,15 @@ actor DirectMailSource {
                         sourcePath: ""
                     )
                 }
-                if !externalFiles.isEmpty {
-                    let externalNames = Set(externalFiles.map { $0.name.lowercased() })
-                    attachments.removeAll { externalNames.contains($0.name.lowercased()) }
-                    attachments.append(contentsOf: externalFiles)
-                }
+                let attachments = Self.reconciledAttachments(
+                    parsed: parsedAttachments,
+                    external: externalFiles
+                )
                 var message = metadataMessage(sourceRow)
                 message = IndexedMailMessage(
-                    messageIdentifier: message.messageIdentifier,
+                    messageIdentifier: parsed.messageIdentifier.contains("@")
+                        ? parsed.messageIdentifier
+                        : message.messageIdentifier,
                     localIdentifier: message.localIdentifier,
                     sender: message.sender,
                     recipients: message.recipients,
@@ -128,7 +131,8 @@ actor DirectMailSource {
                     isSent: message.isSent,
                     attachments: attachments,
                     bodyWasScanned: true,
-                    sourcePath: emlxURL.path
+                    sourcePath: emlxURL.path,
+                    storageKey: message.key
                 )
                 messages.append(message)
             } catch {
@@ -482,7 +486,10 @@ actor DirectMailSource {
                 result.append(
                     Self.indexedAttachment(
                         DirectEmlxAttachment(
-                            identifier: "file",
+                            identifier: Self.externalMIMEIdentifier(
+                                for: fileURL,
+                                relativeTo: root
+                            ) ?? "file",
                             name: fileURL.lastPathComponent,
                             MIMEType: Self.inferredMIMEType(for: fileURL.lastPathComponent),
                             sizeBytes: Int64(values.fileSize ?? 0)
@@ -493,6 +500,49 @@ actor DirectMailSource {
             }
         }
         return result
+    }
+
+    static func reconciledAttachments(
+        parsed: [IndexedMailAttachment],
+        external: [IndexedMailAttachment]
+    ) -> [IndexedMailAttachment] {
+        guard !external.isEmpty else { return parsed }
+        var unmatchedExternal = external
+        var result: [IndexedMailAttachment] = []
+
+        for parsedAttachment in parsed {
+            let parsedPart = MailAttachmentIdentity.canonicalMIMEPartIdentifier(
+                parsedAttachment.identifier
+            )
+            let parsedName = MailAttachmentIdentity.canonicalFileName(parsedAttachment.name)
+            let matchIndex = unmatchedExternal.firstIndex { externalAttachment in
+                let externalPart = MailAttachmentIdentity.canonicalMIMEPartIdentifier(
+                    externalAttachment.identifier
+                )
+                if let parsedPart, let externalPart, parsedPart == externalPart { return true }
+                return !parsedName.isEmpty && parsedName == MailAttachmentIdentity.canonicalFileName(
+                    externalAttachment.name
+                )
+            }
+            if let matchIndex {
+                result.append(unmatchedExternal.remove(at: matchIndex))
+            } else {
+                result.append(parsedAttachment)
+            }
+        }
+        result.append(contentsOf: unmatchedExternal)
+        return result
+    }
+
+    private static func externalMIMEIdentifier(for fileURL: URL, relativeTo root: URL) -> String? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let fileComponents = fileURL.standardizedFileURL.pathComponents
+        guard fileComponents.count > rootComponents.count + 1,
+              Array(fileComponents.prefix(rootComponents.count)) == rootComponents else {
+            return nil
+        }
+        let partDirectory = fileComponents[rootComponents.count]
+        return MailAttachmentIdentity.canonicalMIMEPartIdentifier(partDirectory)
     }
 
     private func scalarInt(_ SQL: String) throws -> Int {

@@ -38,7 +38,7 @@ enum MailResultDeduplicator {
                   let best = variants.values.max(by: { attachmentScore($0) < attachmentScore($1) }) else {
                 return
             }
-            result.append(contentsOf: best)
+            result.append(contentsOf: collapseShadowAttachments(best))
         }
     }
 
@@ -55,6 +55,33 @@ enum MailResultDeduplicator {
         let name = candidate.attachmentName.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasUnclosedQuote = name.hasPrefix("\"") && !name.dropFirst().contains("\"")
         return !(candidate.sizeBytes == 0 && hasUnclosedQuote)
+    }
+
+    /// Mail can describe the same MIME part twice: once from the message
+    /// headers with zero bytes and once from its downloaded Attachments folder.
+    /// Prefer the physical file by MIME position, with a heavily normalized
+    /// filename only as a fallback for older indexes that stored `file` as ID.
+    static func collapseShadowAttachments(
+        _ candidates: [IndexedMailAttachmentCandidate]
+    ) -> [IndexedMailAttachmentCandidate] {
+        let physical = candidates.filter {
+            $0.sizeBytes > 0 && AttachmentMaterializer.directlyAvailableFile(for: $0) != nil
+        }
+        guard !physical.isEmpty else { return candidates }
+
+        return candidates.filter { candidate in
+            guard candidate.sizeBytes == 0 else { return true }
+            let candidatePart = MailAttachmentIdentity.canonicalMIMEPartIdentifier(for: candidate)
+            let candidateName = MailAttachmentIdentity.canonicalFileName(candidate.attachmentName)
+            let hasPhysicalEquivalent = physical.contains { local in
+                let localPart = MailAttachmentIdentity.canonicalMIMEPartIdentifier(for: local)
+                if let candidatePart, let localPart, candidatePart == localPart { return true }
+                return candidate.kind == local.kind &&
+                    !candidateName.isEmpty &&
+                    candidateName == MailAttachmentIdentity.canonicalFileName(local.attachmentName)
+            }
+            return !hasPhysicalEquivalent
+        }
     }
 
     private static func logicalMessageKey(

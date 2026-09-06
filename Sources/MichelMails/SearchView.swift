@@ -584,6 +584,35 @@ private struct SettingsView: View {
                         .padding(6)
                     }
 
+                    GroupBox("Downloaded Originals") {
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack {
+                                Text("Maximum temporary cache")
+                                Spacer()
+                                TextField(
+                                    "GB",
+                                    value: $viewModel.originalCacheLimitGBDraft,
+                                    format: .number.precision(.fractionLength(0...2))
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 72)
+                                Text("GB")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Stepper(
+                                "Cache size",
+                                value: $viewModel.originalCacheLimitGBDraft,
+                                in: 0.25...100,
+                                step: 0.25
+                            )
+                            .labelsHidden()
+                            Text("Default: 1 GB. Oldest temporary originals are removed first. Thumbnails and files in Files from Mails are never removed.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(6)
+                    }
+
                 }
                 .padding(.trailing, 4)
             }
@@ -596,6 +625,6 @@ private struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: 330)
+        .frame(width: 560, height: 450)
     }
 }

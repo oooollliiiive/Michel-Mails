@@ -8,6 +8,7 @@ func directEmlxParsing() throws {
     let boundary = "michel-boundary"
     let payload = """
     From: Michel <michel@example.com>\r
+    Message-ID: <pictures-42@example.com>\r
     Subject: Pictures\r
     Content-Type: multipart/mixed; boundary=\"\(boundary)\"\r
     \r
@@ -38,6 +39,7 @@ func directEmlxParsing() throws {
 
     let parsed = try DirectEmlxReader.read(at: URL)
     #expect(parsed.body.contains("calico cat"))
+    #expect(parsed.messageIdentifier == "pictures-42@example.com")
     #expect(parsed.attachments.count == 1)
     #expect(parsed.attachments[0].name == "cat.jpg")
     #expect(parsed.attachments[0].sizeBytes == 4)
@@ -46,6 +48,36 @@ func directEmlxParsing() throws {
         from: URL
     )
     #expect(extracted == Data([1, 2, 3, 4]))
+}
+
+@Test("Downloaded MIME files replace zero-byte shadow attachments")
+func downloadedMIMEFilesReplaceShadows() {
+    let shadow = IndexedMailAttachment(
+        identifier: "1.2.2",
+        name: "Capture d_ecran . 2026-02-18 a 09.01.44.png",
+        MIMEType: "image/png",
+        sizeBytes: 0,
+        isImage: true,
+        isUsefulImage: true,
+        isDownloaded: false
+    )
+    let physical = IndexedMailAttachment(
+        identifier: "1.2.2",
+        name: "Capture d?ecran . 202 6-02-18 à 09.01.44.png",
+        MIMEType: "image/png",
+        sizeBytes: 748_272,
+        isImage: true,
+        isUsefulImage: true,
+        isDownloaded: true,
+        sourcePath: "/Mail/Attachments/4119/2.2/Capture.png"
+    )
+
+    let reconciled = DirectMailSource.reconciledAttachments(
+        parsed: [shadow],
+        external: [physical]
+    )
+
+    #expect(reconciled == [physical])
 }
 
 @Test("Quoted attachment names may contain semicolons")

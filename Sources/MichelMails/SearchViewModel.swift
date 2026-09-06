@@ -10,6 +10,7 @@ final class SearchViewModel: ObservableObject {
     @Published var showSettings = false
     @Published var APIKeyDraft = ""
     @Published var modelDraft: String
+    @Published var originalCacheLimitGBDraft: Double
     @Published private(set) var AIInterpretationEnabled: Bool
     @Published var historyIsVisible = false
     @Published private(set) var recentPrompts: [String] = []
@@ -45,6 +46,7 @@ final class SearchViewModel: ObservableObject {
         let storedKey = KeychainStore.readAPIKey() ?? ""
         APIKeyDraft = storedKey
         modelDraft = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-5.4-mini"
+        originalCacheLimitGBDraft = PersistentAttachmentStore.configuredSizeLimitGigabytes
         AIInterpretationEnabled = UserDefaults.standard.object(forKey: AIInterpretationDefaultsKey) as? Bool
             ?? !storedKey.isEmpty
         recentPrompts = UserDefaults.standard.stringArray(forKey: historyDefaultsKey) ?? []
@@ -356,6 +358,11 @@ final class SearchViewModel: ObservableObject {
             let model = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             UserDefaults.standard.set(model.isEmpty ? "gpt-5.4-mini" : model, forKey: "openAIModel")
             modelDraft = model.isEmpty ? "gpt-5.4-mini" : model
+            PersistentAttachmentStore.setConfiguredSizeLimitGigabytes(originalCacheLimitGBDraft)
+            originalCacheLimitGBDraft = PersistentAttachmentStore.configuredSizeLimitGigabytes
+            Task.detached(priority: .utility) {
+                try? PersistentAttachmentStore.cleanupExpired()
+            }
             showSettings = false
             statusText = usesOpenAI
                 ? "OpenAI is enabled."

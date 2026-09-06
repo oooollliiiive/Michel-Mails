@@ -938,7 +938,7 @@ actor MailIndexDatabase {
                 has_useful_image = excluded.has_useful_image,
                 indexed_at = excluded.indexed_at,
                 body_indexed = MAX(messages.body_indexed, excluded.body_indexed),
-                source_path = CASE WHEN excluded.source_path <> '' THEN excluded.source_path ELSE messages.source_path END
+                source_path = excluded.source_path
             """,
             bindings: [
                 .text(message.key), .text(message.messageIdentifier), .text(message.localIdentifier),
